@@ -1,0 +1,54 @@
+# ===============================
+# Build output
+# ===============================
+build/
+
+# C/C++ executables
+*.out
+*.exe
+*.o
+*.a
+*.so
+*.dylib
+
+# C/C++ format
+.clang-format
+
+# Dependency files
+*.d
+
+# macOS debug symbols
+*.dSYM/
+
+# ===============================
+# macOS system files
+# ===============================
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ===============================
+# Python
+# ===============================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ===============================
+# VSCode
+# ===============================
+.vscode/
+
+# ===============================
+# Misc
+# ===============================
+*.log
