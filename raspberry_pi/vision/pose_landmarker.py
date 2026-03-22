@@ -5,6 +5,7 @@ from mediapipe.tasks.python import vision
 import cv2
 import numpy as np
 import os
+import time
 
 model_path = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "pose_landmarker.task"
@@ -234,7 +235,9 @@ def run_pose_landmarker_on_camera(camera_id: int = 0, on_detected=None):
         print(f"Cannot open camera {camera_id}")
         return
 
-    timestamp_ms = 0
+    # 使用单调时钟计算真实时间戳，保证单调递增且不受系统时间回拨影响
+    start_monotonic = time.monotonic()
+    last_timestamp_ms = 0
     with vision.PoseLandmarker.create_from_options(options) as landmarker:
         while True:
             ret, frame = cap.read()
@@ -245,7 +248,12 @@ def run_pose_landmarker_on_camera(camera_id: int = 0, on_detected=None):
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
 
-            timestamp_ms += 33  # ~30 FPS
+            # 计算基于真实经过时间的毫秒时间戳（VIDEO 模式要求严格单调递增）
+            timestamp_ms = int((time.monotonic() - start_monotonic) * 1000)
+            # 确保严格单调递增（防止同一毫秒重复调用）
+            timestamp_ms = max(timestamp_ms, last_timestamp_ms + 1)
+            last_timestamp_ms = timestamp_ms
+
             result = landmarker.detect_for_video(mp_image, timestamp_ms)
 
             if result.pose_landmarks:
