@@ -1,9 +1,9 @@
-# AGENTS.md (ESP32)
+# AGENTS.md (Arduino)
 
 ## 角色
 
 负责：
-- 电机控制（TB6612FNG 驱动 4WD 底盘）
+- 电机控制（L298N 驱动 4WD 底盘）
 - 传感器读取（电池电压、编码器可选）
 - 实时执行
 - 接收树莓派指令并通过串口反馈状态
@@ -66,6 +66,7 @@
 - 禁止繁重的浮点运算
 - 禁止阻塞式延时
 - 需要确定性循环
+- 注意内存限制（2KB SRAM）
 
 ---
 
@@ -84,7 +85,7 @@
 
 ## 硬件配置
 
-- **电机驱动**：TB6612FNG（双路 H 桥）
+- **电机驱动**：L298N（双路 H 桥）
 - **底盘**：4WD 四轮驱动
   - 左前轮 + 左后轮（并联）→ 左电机组
   - 右前轮 + 右后轮（并联）→ 右电机组
@@ -125,17 +126,15 @@ int speed_to_pwm(float speed) {
 
 ### 电机控制
 
-TB6612FNG 控制逻辑：
+L298N 控制逻辑：
 
-| STBY | AIN1 | AIN2 | 左电机状态 |
-|------|------|------|------------|
-| HIGH | HIGH | LOW  | 正转       |
-| HIGH | LOW  | HIGH | 反转       |
-| HIGH | HIGH | HIGH | 制动       |
-| HIGH | LOW  | LOW  | 停止       |
-| LOW  | X    | X    | 待机       |
+| ENA  | IN1 | IN2 | 左电机状态 |
+|------|-----|-----|------------|
+| HIGH | HIGH| LOW | 正转       |
+| HIGH | LOW | HIGH| 反转       |
+| LOW  | X   | X   | 停止       |
 
-（右电机 BIN1/BIN2 同理）
+（右电机 ENB/IN3/IN4 同理）
 
 ---
 
@@ -149,7 +148,7 @@ TB6612FNG 控制逻辑：
 // 分压比（根据实际电路调整）
 const float VOLTAGE_DIVIDER = 0.5;
 const float ADC_REFERENCE = 3.3;
-const int ADC_RESOLUTION = 4095;
+const int ADC_RESOLUTION = 1023;
 
 float read_battery_voltage() {
     int adc_value = analogRead(BATTERY_PIN);
