@@ -132,7 +132,13 @@ def extract_pose_info(pose_landmarks, image_width: int, image_height: int) -> di
             "target_y": int,   # Hip center y coordinate
             "height": int,     # Body height (nose to knee)
             "width": int,      # Body width (shoulder to shoulder)
-            "confidence": float # Detection confidence
+            "target_x_norm": float, # Hip center x in [0,1]
+            "target_y_norm": float, # Hip center y in [0,1]
+            "x_error_norm": float,  # Horizontal error in [-1,1]
+            "y_error_norm": float,  # Vertical error in [-1,1]
+            "height_norm": float,   # Body height normalized by image height
+            "width_norm": float,    # Body width normalized by image width
+            "confidence": float      # Detection confidence
         }
     """
     num_landmarks = len(pose_landmarks)
@@ -164,11 +170,25 @@ def extract_pose_info(pose_landmarks, image_width: int, image_height: int) -> di
     key_points = [11, 12, 23, 24]
     confidence = sum(pose_landmarks[i].visibility for i in key_points) / len(key_points)
 
+    # 归一化信息（供 planning 使用，降低对分辨率变化的敏感性）
+    target_x_norm = min(max(center_x / image_width, 0.0), 1.0)
+    target_y_norm = min(max(center_y / image_height, 0.0), 1.0)
+    x_error_norm = target_x_norm * 2.0 - 1.0
+    y_error_norm = target_y_norm * 2.0 - 1.0
+    height_norm = min(max(body_height / image_height, 0.0), 1.0)
+    width_norm = min(max(body_width / image_width, 0.0), 1.0)
+
     return {
         "target_x": center_x,
         "target_y": center_y,
         "height": body_height,
         "width": body_width,
+        "target_x_norm": target_x_norm,
+        "target_y_norm": target_y_norm,
+        "x_error_norm": x_error_norm,
+        "y_error_norm": y_error_norm,
+        "height_norm": height_norm,
+        "width_norm": width_norm,
         "confidence": confidence,
     }
 
@@ -217,6 +237,12 @@ def run_pose_landmarker_on_camera(camera_id: int = 0, on_detected=None):
                         "target_y": int,
                         "height": int,
                         "width": int,
+                        "target_x_norm": float,
+                        "target_y_norm": float,
+                        "x_error_norm": float,
+                        "y_error_norm": float,
+                        "height_norm": float,
+                        "width_norm": float,
                         "confidence": float
                     }
     """
