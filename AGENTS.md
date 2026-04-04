@@ -148,9 +148,8 @@ Robotics-from-Scratch/
 │   ├── vision/         # 视觉模块
 │   │   ├── face_landmarker.py
 │   │   └── hand_landmarker.py
-│   ├── planning/       # 规划模块（决策 + PID）
+│   ├── planning/       # 规划模块（决策 + PID + 云台控制）
 │   ├── hardware/       # 硬件接口
-│   │   ├── gimbal.py   # 云台控制
 │   │   └── serial_comm.py  # 串口通信
 │   └── main.py         # 入口
 └── arduino/              # Arduino代码（底层）

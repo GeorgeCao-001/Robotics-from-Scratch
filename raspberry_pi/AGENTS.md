@@ -62,6 +62,10 @@
 - 垂直舵机（tilt）：控制上下转动
 - 采用简单的比例控制（P控制）
 
+实现约定：
+- 云台控制状态与增量计算统一在 `planning/gimbal_controller.py`
+- `hardware/` 只负责通信接口（如 `serial_comm.py`），不重复维护云台姿态状态
+
 ---
 
 ### 决策模块
