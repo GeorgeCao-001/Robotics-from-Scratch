@@ -5,7 +5,7 @@ import threading
 import time
 from dataclasses import dataclass
 from math import isfinite
-from typing import Any
+from typing import Any, Callable
 
 from raspberry_pi.hardware import SerialComm, SerialConfig
 from raspberry_pi.planning.config import PlanningConfig
@@ -16,9 +16,9 @@ from raspberry_pi.planning.types import VisionTarget
 @dataclass(frozen=True)
 class RuntimeConfig:
     port: str
-    baudrate: int = 115200
+    baudrate: int = 9600
     camera_id: int = 0
-    control_hz: float = 20.0
+    control_hz: float = 10.0
     detection_stale_s: float = 0.2
     status_interval_s: float = 0.0
 
@@ -97,20 +97,23 @@ def _run_control_loop(
     comm: SerialComm,
     shared: SharedVisionState,
     runtime: RuntimeConfig,
-    vision_alive: callable,
-    now_fn: callable = time.monotonic,
-    sleep_fn: callable = time.sleep,
+    vision_alive: Callable[[], bool],
+    now_fn: Callable[[], float] = time.monotonic,
+    sleep_fn: Callable[[float], None] = time.sleep,
 ) -> None:
-    period_s = 1.0 / max(runtime.control_hz, 1.0)
+    if runtime.control_hz <= 0.0:
+        raise ValueError("control_hz must be > 0")
+
+    period_s = 1.0 / runtime.control_hz
     last_t = now_fn()
     last_status_t = last_t
 
     while vision_alive():
+        loop_start_t = now_fn()
         failed, error = shared.vision_failed()
         if failed:
             if error:
                 print(f"[MAIN] vision failed: {error}")
-            comm.send_stop()
             return
 
         now_t = now_fn()
@@ -119,8 +122,12 @@ def _run_control_loop(
 
         target = shared.get(now_t, runtime.detection_stale_s)
         cmds = planner.update(target, dt_s)
-        for cmd in cmds:
-            comm.send_message(cmd)
+        try:
+            for cmd in cmds:
+                comm.send_message(cmd)
+        except Exception as exc:
+            print(f"[MAIN] send failed: {exc}")
+            return
 
         if (
             runtime.status_interval_s > 0
@@ -132,13 +139,15 @@ def _run_control_loop(
             except Exception as exc:  # pragma: no cover
                 print(f"[MAIN] status request failed: {exc}")
 
-        sleep_fn(period_s)
+        elapsed = now_fn() - loop_start_t
+        sleep_fn(max(0.0, period_s - elapsed))
 
 
 def run(runtime: RuntimeConfig) -> None:
     planner = Planner(PlanningConfig())
     shared = SharedVisionState()
     comm = SerialComm(SerialConfig(port=runtime.port, baudrate=runtime.baudrate))
+    stop_event = threading.Event()
 
     def on_detected(pose_info: dict[str, Any]) -> None:
         target = _to_vision_target(pose_info)
@@ -146,30 +155,33 @@ def run(runtime: RuntimeConfig) -> None:
             return
         shared.update(target, time.monotonic())
 
-    def vision_worker() -> None:
-        try:
-            from raspberry_pi.vision.pose_landmarker import (
-                run_pose_landmarker_on_camera,
-            )
-
-            run_pose_landmarker_on_camera(runtime.camera_id, on_detected=on_detected)
-        except Exception as exc:  # pragma: no cover
-            shared.set_vision_failed(exc)
-
-    vision_thread = threading.Thread(target=vision_worker, daemon=True)
-
-    try:
-        comm.open()
-        comm.send_stop()
-        vision_thread.start()
+    def control_worker() -> None:
         _run_control_loop(
             planner=planner,
             comm=comm,
             shared=shared,
             runtime=runtime,
-            vision_alive=vision_thread.is_alive,
+            vision_alive=lambda: not stop_event.is_set(),
         )
+
+    control_thread = threading.Thread(target=control_worker, daemon=True)
+    control_started = False
+
+    try:
+        from raspberry_pi.vision.pose_landmarker import run_pose_landmarker_on_camera
+
+        comm.open()
+        time.sleep(1.5)
+        comm.send_stop()
+        control_thread.start()
+        control_started = True
+        run_pose_landmarker_on_camera(runtime.camera_id, on_detected=on_detected)
+    except Exception as exc:  # pragma: no cover
+        shared.set_vision_failed(exc)
     finally:
+        stop_event.set()
+        if control_started:
+            control_thread.join(timeout=1.0)
         try:
             comm.send_stop()
         except Exception:
@@ -182,10 +194,10 @@ def _parse_args() -> RuntimeConfig:
     parser.add_argument(
         "--port", required=True, help="Serial port, e.g. /dev/cu.usbmodemxxxx"
     )
-    parser.add_argument("--baudrate", type=int, default=115200, help="UART baudrate")
+    parser.add_argument("--baudrate", type=int, default=9600, help="UART baudrate")
     parser.add_argument("--camera-id", type=int, default=0, help="OpenCV camera id")
     parser.add_argument(
-        "--control-hz", type=float, default=20.0, help="Control loop frequency"
+        "--control-hz", type=float, default=10.0, help="Control loop frequency"
     )
     parser.add_argument(
         "--detection-stale-s",

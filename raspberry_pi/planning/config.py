@@ -19,10 +19,10 @@ class PlanningConfig:
     pan_min: float = -180.0
     pan_max: float = 180.0
     tilt_min: float = 0.0
-    tilt_max: float = 90.0
+    tilt_max: float = 180.0
 
     pan_front: float = 0.0
-    tilt_center: float = 0.0
+    tilt_center: float = 90.0
 
     smoothing_alpha_move: float = 0.3
     smoothing_alpha_gimbal: float = 0.5

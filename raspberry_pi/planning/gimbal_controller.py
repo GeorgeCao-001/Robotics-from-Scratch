@@ -58,7 +58,7 @@ class GimbalController:
         self._pan_total_offset += pan
         self._pan_abs = self._wrap_to_signed_180(self._pan_total_offset)
 
-        # avoid tilt from going to above 90 or below 0
+        # avoid tilt from going above 180 or below 0
         tilt_next = _clamp(
             self._tilt_abs + tilt, self._cfg.tilt_min, self._cfg.tilt_max
         )

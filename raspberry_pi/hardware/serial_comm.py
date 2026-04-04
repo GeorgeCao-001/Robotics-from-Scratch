@@ -13,9 +13,9 @@ JsonMessage = dict[str, Any]
 @dataclass(frozen=True)
 class SerialConfig:
     port: str
-    baudrate: int = 115200
+    baudrate: int = 9600
     timeout_s: float = 0.05
-    write_timeout_s: float = 0.05
+    write_timeout_s: float = 1.0
     newline: str = "\n"
 
 
@@ -36,7 +36,9 @@ class SerialComm:
 
     @property
     def is_open(self) -> bool:
-        return bool(self._serial is not None and getattr(self._serial, "is_open", False))
+        return bool(
+            self._serial is not None and getattr(self._serial, "is_open", False)
+        )
 
     def open(self) -> None:
         if self._serial is None:
