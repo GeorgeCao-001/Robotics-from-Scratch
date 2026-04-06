@@ -225,7 +225,9 @@ def select_largest_person(
     return largest_pose, largest_info
 
 
-def run_pose_landmarker_on_camera(camera_id: int = 0, on_detected=None):
+def run_pose_landmarker_on_camera(
+    camera_id: int = 0, on_detected=None, show_window: bool = False
+):
     """
     Run pose landmarker on camera with optional callback for detected poses.
 
@@ -245,6 +247,7 @@ def run_pose_landmarker_on_camera(camera_id: int = 0, on_detected=None):
                         "width_norm": float,
                         "confidence": float
                     }
+        show_window: Whether to display OpenCV window and allow 'q' quit
     """
     base_options = python.BaseOptions(model_asset_path=model_path)
     options = vision.PoseLandmarkerOptions(
@@ -303,13 +306,15 @@ def run_pose_landmarker_on_camera(camera_id: int = 0, on_detected=None):
             else:
                 annotated = frame
 
-            cv2.imshow("Pose Landmarker", annotated)
+            if show_window:
+                cv2.imshow("Pose Landmarker", annotated)
 
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
 
     cap.release()
-    cv2.destroyAllWindows()
+    if show_window:
+        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

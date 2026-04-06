@@ -18,9 +18,12 @@ class RuntimeConfig:
     port: str
     baudrate: int = 9600
     camera_id: int = 0
+    show_window: bool = False
     control_hz: float = 10.0
     detection_stale_s: float = 0.2
     status_interval_s: float = 0.0
+    # optional, status query interval. no status query if <= 0
+    # default: no status query
 
 
 class SharedVisionState:
@@ -98,6 +101,7 @@ def _run_control_loop(
     shared: SharedVisionState,
     runtime: RuntimeConfig,
     vision_alive: Callable[[], bool],
+    on_fatal_error: Callable[[Exception], None],
     now_fn: Callable[[], float] = time.monotonic,
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> None:
@@ -127,6 +131,11 @@ def _run_control_loop(
                 comm.send_message(cmd)
         except Exception as exc:
             print(f"[MAIN] send failed: {exc}")
+            on_fatal_error(exc)
+            try:
+                comm.send_stop()
+            except Exception:
+                pass
             return
 
         if (
@@ -141,6 +150,8 @@ def _run_control_loop(
 
         elapsed = now_fn() - loop_start_t
         sleep_fn(max(0.0, period_s - elapsed))
+        # nothing dealing with frame drops if it happens
+        # but not that urgent
 
 
 def run(runtime: RuntimeConfig) -> None:
@@ -150,6 +161,8 @@ def run(runtime: RuntimeConfig) -> None:
     stop_event = threading.Event()
 
     def on_detected(pose_info: dict[str, Any]) -> None:
+        if stop_event.is_set():
+            raise RuntimeError("control loop stopped")
         target = _to_vision_target(pose_info)
         if target is None:
             return
@@ -162,6 +175,10 @@ def run(runtime: RuntimeConfig) -> None:
             shared=shared,
             runtime=runtime,
             vision_alive=lambda: not stop_event.is_set(),
+            on_fatal_error=lambda exc: (
+                shared.set_vision_failed(exc),
+                stop_event.set(),
+            ),
         )
 
     control_thread = threading.Thread(target=control_worker, daemon=True)
@@ -175,7 +192,11 @@ def run(runtime: RuntimeConfig) -> None:
         comm.send_stop()
         control_thread.start()
         control_started = True
-        run_pose_landmarker_on_camera(runtime.camera_id, on_detected=on_detected)
+        run_pose_landmarker_on_camera(
+            runtime.camera_id,
+            on_detected=on_detected,
+            show_window=runtime.show_window,
+        )
     except Exception as exc:  # pragma: no cover
         shared.set_vision_failed(exc)
     finally:
@@ -197,6 +218,11 @@ def _parse_args() -> RuntimeConfig:
     parser.add_argument("--baudrate", type=int, default=9600, help="UART baudrate")
     parser.add_argument("--camera-id", type=int, default=0, help="OpenCV camera id")
     parser.add_argument(
+        "--show_window",
+        action="store_true",
+        help="Show OpenCV visualization window",
+    )
+    parser.add_argument(
         "--control-hz", type=float, default=10.0, help="Control loop frequency"
     )
     parser.add_argument(
@@ -216,6 +242,7 @@ def _parse_args() -> RuntimeConfig:
         port=args.port,
         baudrate=args.baudrate,
         camera_id=args.camera_id,
+        show_window=args.show_window,
         control_hz=args.control_hz,
         detection_stale_s=args.detection_stale_s,
         status_interval_s=args.status_interval_s,

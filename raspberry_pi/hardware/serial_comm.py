@@ -65,6 +65,9 @@ class SerialComm:
     def send_gimbal(self, pan: float, tilt: float) -> None:
         self.send_message({"cmd": "gimbal", "pan": float(pan), "tilt": float(tilt)})
 
+    # FIXME
+    # when it stops, the move turns (0.0, 0.0) immediately
+    # might be not good
     def send_stop(self) -> None:
         self.send_move(0.0, 0.0)
 
