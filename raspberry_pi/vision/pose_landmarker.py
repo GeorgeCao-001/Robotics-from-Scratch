@@ -5,11 +5,26 @@ from mediapipe.tasks.python import vision
 import cv2
 import numpy as np
 import os
+import select
+import subprocess
+import threading
 import time
 
 model_path = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "pose_landmarker.task"
 )
+
+
+def _create_pose_landmarker_options(num_poses: int = 1):
+    base_options = python.BaseOptions(model_asset_path=model_path)
+    return vision.PoseLandmarkerOptions(
+        base_options=base_options,
+        num_poses=num_poses,
+        min_pose_detection_confidence=0.5,
+        min_pose_presence_confidence=0.5,
+        min_tracking_confidence=0.5,
+        running_mode=vision.RunningMode.VIDEO,
+    )
 
 
 def to_pixel(x_norm: float, y_norm: float, w: int, h: int) -> tuple[int, int]:
@@ -225,46 +240,65 @@ def select_largest_person(
     return largest_pose, largest_info
 
 
-def run_pose_landmarker_on_camera(
-    camera_id: int = 0, on_detected=None, show_window: bool = False
+def _process_pose_frame(
+    frame_bgr,
+    landmarker,
+    start_monotonic,
+    last_timestamp_ms,
+    on_detected,
+    show_window,
 ):
-    """
-    Run pose landmarker on camera with optional callback for detected poses.
+    rgb_frame = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
 
-    Args:
-        camera_id: Camera device ID (default: 0)
-        on_detected: Optional callback function(pose_info_dict) called when pose detected
-                    pose_info format: {
-                        "target_x": int,
-                        "target_y": int,
-                        "height": int,
-                        "width": int,
-                        "target_x_norm": float,
-                        "target_y_norm": float,
-                        "x_error_norm": float,
-                        "y_error_norm": float,
-                        "height_norm": float,
-                        "width_norm": float,
-                        "confidence": float
-                    }
-        show_window: Whether to display OpenCV window and allow 'q' quit
-    """
-    base_options = python.BaseOptions(model_asset_path=model_path)
-    options = vision.PoseLandmarkerOptions(
-        base_options=base_options,
-        num_poses=3,
-        min_pose_detection_confidence=0.5,
-        min_pose_presence_confidence=0.5,
-        min_tracking_confidence=0.5,
-        running_mode=vision.RunningMode.VIDEO,
-    )
+    timestamp_ms = int((time.monotonic() - start_monotonic) * 1000)
+    timestamp_ms = max(timestamp_ms, last_timestamp_ms + 1)
+    last_timestamp_ms = timestamp_ms
+
+    result = landmarker.detect_for_video(mp_image, timestamp_ms)
+
+    if result.pose_landmarks:
+        h, w = frame_bgr.shape[:2]
+        selected_pose, pose_info = select_largest_person(
+            result.pose_landmarks, w, h
+        )
+        if on_detected and pose_info:
+            on_detected(pose_info)
+        if selected_pose:
+            annotated = draw_pose_landmarks(frame_bgr, [selected_pose])
+        else:
+            annotated = draw_pose_landmarks(frame_bgr, result.pose_landmarks)
+    else:
+        annotated = frame_bgr
+
+    should_quit = False
+    if show_window:
+        cv2.imshow("Pose Landmarker", annotated)
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            should_quit = True
+
+    return last_timestamp_ms, annotated, should_quit
+
+
+def run_pose_landmarker_on_camera(
+    camera_id: int = 0,
+    on_detected=None,
+    show_window: bool = False,
+    frame_width: int = 640,
+    frame_height: int = 480,
+    camera_fps: int = 15,
+    num_poses: int = 1,
+):
+    options = _create_pose_landmarker_options(num_poses=num_poses)
 
     cap = cv2.VideoCapture(camera_id)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, frame_width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, frame_height)
+    cap.set(cv2.CAP_PROP_FPS, camera_fps)
     if not cap.isOpened():
         print(f"Cannot open camera {camera_id}")
         return
 
-    # 使用单调时钟计算真实时间戳，保证单调递增且不受系统时间回拨影响
     start_monotonic = time.monotonic()
     last_timestamp_ms = 0
     with vision.PoseLandmarker.create_from_options(options) as landmarker:
@@ -274,47 +308,142 @@ def run_pose_landmarker_on_camera(
                 print("Failed to grab frame")
                 break
 
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-
-            # 计算基于真实经过时间的毫秒时间戳（VIDEO 模式要求严格单调递增）
-            timestamp_ms = int((time.monotonic() - start_monotonic) * 1000)
-            # 确保严格单调递增（防止同一毫秒重复调用）
-            timestamp_ms = max(timestamp_ms, last_timestamp_ms + 1)
-            last_timestamp_ms = timestamp_ms
-
-            result = landmarker.detect_for_video(mp_image, timestamp_ms)
-
-            if result.pose_landmarks:
-                # Get image dimensions
-                h, w = frame.shape[:2]
-
-                # Select largest person and extract info
-                selected_pose, pose_info = select_largest_person(
-                    result.pose_landmarks, w, h
-                )
-
-                # Call callback if provided and pose detected
-                if on_detected and pose_info:
-                    on_detected(pose_info)
-
-                # Draw landmarks (only for the selected pose if multiple)
-                if selected_pose:
-                    annotated = draw_pose_landmarks(frame, [selected_pose])
-                else:
-                    annotated = draw_pose_landmarks(frame, result.pose_landmarks)
-            else:
-                annotated = frame
-
-            if show_window:
-                cv2.imshow("Pose Landmarker", annotated)
-
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    break
+            last_timestamp_ms, _annotated, should_quit = _process_pose_frame(
+                frame, landmarker, start_monotonic, last_timestamp_ms,
+                on_detected, show_window,
+            )
+            if should_quit:
+                break
 
     cap.release()
     if show_window:
         cv2.destroyAllWindows()
+
+
+def run_pose_landmarker_on_rpicam(
+    camera_id: int = 0,
+    on_detected=None,
+    show_window: bool = False,
+    frame_width: int = 640,
+    frame_height: int = 480,
+    camera_fps: int = 15,
+    num_poses: int = 1,
+):
+    options = _create_pose_landmarker_options(num_poses=num_poses)
+
+    cmd = [
+        "rpicam-vid",
+        "--camera", str(camera_id),
+        "--timeout", "0",
+        "--nopreview",
+        "--codec", "mjpeg",
+        "--width", str(frame_width),
+        "--height", str(frame_height),
+        "--framerate", str(camera_fps),
+        "--verbose", "0",
+        "-o", "-",
+    ]
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if proc.stdout is None:
+        raise RuntimeError("failed to open rpicam-vid stdout")
+
+    stderr_lines = []
+
+    def drain_stderr():
+        if proc.stderr is None:
+            return
+        for line in proc.stderr:
+            stderr_lines.append(line.decode(errors="replace").rstrip())
+            del stderr_lines[:-20]
+
+    threading.Thread(target=drain_stderr, daemon=True).start()
+
+    buf = bytearray()
+    start_monotonic = time.monotonic()
+    last_timestamp_ms = 0
+    last_frame_time = start_monotonic
+    frame_timeout_s = max(5.0, 3.0 / max(camera_fps, 1))
+    max_buffer_bytes = max(frame_width * frame_height * 4, 10 * 1024 * 1024)
+
+    try:
+        with vision.PoseLandmarker.create_from_options(options) as landmarker:
+            while True:
+                if proc.poll() is not None:
+                    details = "\n".join(stderr_lines[-10:])
+                    raise RuntimeError(
+                        f"rpicam-vid exited with code {proc.returncode}: {details}"
+                    )
+
+                readable, _, _ = select.select([proc.stdout], [], [], 0.2)
+                if not readable:
+                    if time.monotonic() - last_frame_time > frame_timeout_s:
+                        details = "\n".join(stderr_lines[-10:])
+                        raise RuntimeError(
+                            "timed out waiting for rpicam-vid frame"
+                            + (f": {details}" if details else "")
+                        )
+                    continue
+
+                chunk = proc.stdout.read(4096)
+                if not chunk:
+                    details = "\n".join(stderr_lines[-10:])
+                    raise RuntimeError(
+                        "rpicam-vid ended before a complete frame was received"
+                        + (f": {details}" if details else "")
+                    )
+                buf.extend(chunk)
+                if len(buf) > max_buffer_bytes:
+                    details = "\n".join(stderr_lines[-10:])
+                    raise RuntimeError(
+                        "rpicam-vid MJPEG buffer exceeded limit; "
+                        "check codec/output format"
+                        + (f": {details}" if details else "")
+                    )
+
+                while True:
+                    soi = buf.find(b"\xff\xd8")
+                    if soi < 0:
+                        break
+                    if soi > 0:
+                        del buf[:soi]
+                    eoi = buf.find(b"\xff\xd9")
+                    if eoi < 0:
+                        break
+                    jpeg_bytes = bytes(buf[: eoi + 2])
+                    del buf[: eoi + 2]
+
+                    frame = cv2.imdecode(
+                        np.frombuffer(jpeg_bytes, np.uint8), cv2.IMREAD_COLOR
+                    )
+                    if frame is None:
+                        continue
+                    last_frame_time = time.monotonic()
+
+                    last_timestamp_ms, _annotated, should_quit = (
+                        _process_pose_frame(
+                            frame,
+                            landmarker,
+                            start_monotonic,
+                            last_timestamp_ms,
+                            on_detected,
+                            show_window,
+                        )
+                    )
+                    if should_quit:
+                        return
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        if show_window:
+            cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":

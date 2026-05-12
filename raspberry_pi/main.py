@@ -17,13 +17,16 @@ from raspberry_pi.planning.types import VisionTarget
 class RuntimeConfig:
     port: str
     baudrate: int = 9600
+    camera_backend: str = "opencv"
     camera_id: int = 0
     show_window: bool = False
+    frame_width: int = 640
+    frame_height: int = 480
+    camera_fps: int = 15
+    num_poses: int = 1
     control_hz: float = 10.0
     detection_stale_s: float = 0.2
     status_interval_s: float = 0.0
-    # optional, status query interval. no status query if <= 0
-    # default: no status query
 
 
 class SharedVisionState:
@@ -185,19 +188,37 @@ def run(runtime: RuntimeConfig) -> None:
     control_started = False
 
     try:
-        from raspberry_pi.vision.pose_landmarker import run_pose_landmarker_on_camera
+        from raspberry_pi.vision.pose_landmarker import (
+            run_pose_landmarker_on_camera,
+            run_pose_landmarker_on_rpicam,
+        )
 
         comm.open()
         time.sleep(1.5)
         comm.send_stop()
         control_thread.start()
         control_started = True
-        run_pose_landmarker_on_camera(
-            runtime.camera_id,
-            on_detected=on_detected,
-            show_window=runtime.show_window,
-        )
+
+        vision_kwargs = {
+            "on_detected": on_detected,
+            "show_window": runtime.show_window,
+            "frame_width": runtime.frame_width,
+            "frame_height": runtime.frame_height,
+            "camera_fps": runtime.camera_fps,
+            "num_poses": runtime.num_poses,
+        }
+        if runtime.camera_backend == "rpicam":
+            run_pose_landmarker_on_rpicam(
+                runtime.camera_id,
+                **vision_kwargs,
+            )
+        else:
+            run_pose_landmarker_on_camera(
+                runtime.camera_id,
+                **vision_kwargs,
+            )
     except Exception as exc:  # pragma: no cover
+        print(f"[MAIN] vision runtime failed: {exc}")
         shared.set_vision_failed(exc)
     finally:
         stop_event.set()
@@ -213,14 +234,32 @@ def run(runtime: RuntimeConfig) -> None:
 def _parse_args() -> RuntimeConfig:
     parser = argparse.ArgumentParser(description="Pose follow main pipeline")
     parser.add_argument(
-        "--port", required=True, help="Serial port, e.g. /dev/cu.usbmodemxxxx"
+        "--port", required=True, help="Serial port, e.g. /dev/ttyACM0 (Linux) or /dev/cu.usbmodemxxxx (macOS)"
     )
     parser.add_argument("--baudrate", type=int, default=9600, help="UART baudrate")
-    parser.add_argument("--camera-id", type=int, default=0, help="OpenCV camera id")
+    parser.add_argument(
+        "--camera-backend",
+        choices=["opencv", "rpicam"],
+        default="opencv",
+        help="Camera capture backend: opencv (USB) or rpicam (CSI via rpicam-vid)",
+    )
+    parser.add_argument("--camera-id", type=int, default=0, help="Camera device ID")
     parser.add_argument(
         "--show_window",
         action="store_true",
         help="Show OpenCV visualization window",
+    )
+    parser.add_argument(
+        "--frame-width", type=int, default=640, help="Camera frame width"
+    )
+    parser.add_argument(
+        "--frame-height", type=int, default=480, help="Camera frame height"
+    )
+    parser.add_argument(
+        "--camera-fps", type=int, default=15, help="Camera frame rate"
+    )
+    parser.add_argument(
+        "--num-poses", type=int, default=1, help="Number of poses for MediaPipe"
     )
     parser.add_argument(
         "--control-hz", type=float, default=10.0, help="Control loop frequency"
@@ -241,8 +280,13 @@ def _parse_args() -> RuntimeConfig:
     return RuntimeConfig(
         port=args.port,
         baudrate=args.baudrate,
+        camera_backend=args.camera_backend,
         camera_id=args.camera_id,
         show_window=args.show_window,
+        frame_width=args.frame_width,
+        frame_height=args.frame_height,
+        camera_fps=args.camera_fps,
+        num_poses=args.num_poses,
         control_hz=args.control_hz,
         detection_stale_s=args.detection_stale_s,
         status_interval_s=args.status_interval_s,
