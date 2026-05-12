@@ -1,0 +1,911 @@
+/*
+ * TB6612 两驱小车控制程序 - Arduino UNO
+ * ==========================================
+ * 基于 L130_模块化小车_S28A_HAL库 的控制逻辑移植
+ *
+ * 硬件平台: Arduino UNO (ATmega328P, 16MHz)
+ * 驱动模块: WHEELTEC 四路TB6612FNG (双芯片, 端口A/B/C/D)
+ * 电机类型: MG513XP28_12V (WHEELTEC带霍尔编码器直流减速电机)
+ * 电机接口: 5线集成接口 (电机电源×2 + 编码器×3)
+ * 电机连接: 左电机→A口, 右电机→D口
+ * 供电方式: 12V锂电池组 (3S, 标称11.1V~12.6V)
+ * 小车结构: 三轮结构 (两驱动轮 + 前部万向轮)
+ *
+ * 控制方式: 差速驱动 (Diff_Car模式)
+ * 速度控制: 增量式PI闭环控制
+ * 控制周期: 5ms (200Hz)
+ * 遥控方式: ESP-NOW (ESP32-S3→ESP32-C3→UART→Arduino)
+ */
+
+// ============================================================
+// 引脚定义 - WHEELTEC 四路TB6612 电机驱动模块
+// ============================================================
+// 模块集成两颗TB6612FNG芯片:
+//   Chip1: 控制A口(左电机) + B口(未使用)
+//   Chip2: 控制C口(未使用) + D口(右电机)
+//
+// 每个端口有3个控制引脚: PWM + IN1 + IN2
+
+// 左电机 → 模块A口 (TB6612 Chip1)
+#define MOTOR_A_PWM   9     // PWMA - PWM调速
+#define MOTOR_A_IN1   7     // AIN1 - 方向控制1
+#define MOTOR_A_IN2   6     // AIN2 - 方向控制2
+
+// 右电机 → 模块D口 (TB6612 Chip2)
+#define MOTOR_D_PWM   10    // PWMD - PWM调速
+#define MOTOR_D_IN1   8     // DIN1 - 方向控制1
+#define MOTOR_D_IN2   12    // DIN2 - 方向控制2
+
+// TB6612 待机控制 (两个芯片的STBY可并联共用一个引脚)
+#define STBY_PIN      4     // STBY (HIGH=正常工作, LOW=待机)
+
+// ============================================================
+// 引脚定义 - 霍尔编码器
+// ============================================================
+
+// 左电机编码器 (使用外部中断 INT0)
+#define ENCODER_LEFT_A   2   // 编码器A相脉冲 (INT0)
+
+// 右电机编码器 (使用外部中断 INT1)
+#define ENCODER_RIGHT_A  3   // 编码器A相脉冲 (INT1)
+
+// ============================================================
+// 引脚定义 - ESP32-C3 通信 (SoftwareSerial)
+// ============================================================
+// ESP32-C3 作为ESP-NOW接收器, 通过UART与Arduino UNO通信
+// ESP32-C3 UART1 TX (GPIO5) → Arduino D5 (SoftSerial RX)
+// ESP32-C3 UART1 RX (GPIO6) ← Arduino D11 (SoftSerial TX)
+
+#define SOFTSERIAL_RX  5     // D5 - 接收来自ESP32-C3
+#define SOFTSERIAL_TX  11    // D11 - 发送至ESP32-C3
+
+// ============================================================
+// 控制模式定义
+// ============================================================
+#define CTRL_MODE_DEMO    0   // 演示模式 (自动运行)
+#define CTRL_MODE_SERIAL  1   // 串口命令模式 (USB调试)
+#define CTRL_MODE_REMOTE  2   // 遥控器模式 (ESP-NOW)
+
+// 遥控器超时 (ms), 超过此时间未收到指令则自动停车
+#define REMOTE_TIMEOUT   500
+
+// ============================================================
+// 系统参数配置
+// ============================================================
+
+// PWM参数
+#define PWM_MAX         255     // Arduino PWM最大值 (8位)
+#define PWM_LIMIT       240     // PWM限幅值 (预留余量)
+
+// ============================================================
+// MG513XP28_12V 电机参数配置
+// ============================================================
+// 编码器参数 (MG513XP28_12V典型值)
+// 霍尔编码器: 11线 × 4倍频 = 44脉冲/电机轴圈
+// 减速比1:28/1:30时, 输出轴每圈脉冲数 = 44 × 减速比
+#define ENCODER_PPR     44      // 编码器每圈脉冲数 (电机轴, 4倍频后)
+#define GEAR_RATIO      28      // 减速比 (根据实际型号调整: 10/20/28/30/60)
+
+// PID控制参数 (MG513XP28电机优化值)
+// MG513电机扭矩较大, 响应较慢, KP/KI需适当增大
+#define VELOCITY_KP     18.0f   // 速度环比例系数 (建议范围: 15-25)
+#define VELOCITY_KI     8.0f    // 速度环积分系数 (建议范围: 5-12)
+#define VELOCITY_KD     0.0f    // 速度环微分系数 (通常为0)
+
+// 默认运动速度 (编码器脉冲/5ms控制周期)
+// MG513电机建议初始值: 20-30脉冲/5ms
+#define DEFAULT_SPEED   25      // 默认前进速度
+#define DEFAULT_TURN    18      // 默认转向差速
+
+// PID输出限幅
+#define PID_OUTPUT_MIN  -240    // PID最小输出
+#define PID_OUTPUT_MAX  240     // PID最大输出
+
+// 电池电压阈值
+#define BATTERY_LOW     10.0f   // 低压保护阈值 (12V锂电池组)
+
+// 控制周期
+#define CONTROL_PERIOD  5       // 控制周期 (ms)
+
+// ============================================================
+// 库引入
+// ============================================================
+#include <SoftwareSerial.h>
+
+// ============================================================
+// SoftwareSerial 实例 (与ESP32-C3通信)
+// ============================================================
+SoftwareSerial remoteSerial(SOFTSERIAL_RX, SOFTSERIAL_TX);
+
+// ============================================================
+// 全局变量
+// ============================================================
+
+// 编码器脉冲计数 (在中断服务程序中累加)
+volatile long encoderLeftCount  = 0;
+volatile long encoderRightCount = 0;
+
+// 编码器速度值 (每控制周期的脉冲数)
+int encoderLeft  = 0;
+int encoderRight = 0;
+
+// 目标速度 (编码器脉冲/控制周期)
+int targetSpeedA = 0;
+int targetSpeedD = 0;
+
+// 运动控制变量
+float velocity = 0;     // 线速度
+float turn     = 0;     // 转向角速度(差速值)
+
+// 电机PWM输出值
+int motorPwmA = 0;
+int motorPwmD = 0;
+
+// 系统状态标志
+bool flagStop    = true;    // 停止标志 (默认停止状态)
+bool flagRunning = false;   // 运行标志
+
+// 电池电压
+float batteryVoltage = 12.0f;
+
+// 控制循环计数器
+unsigned long lastControlTime = 0;
+
+// 演示模式: 自动运行演示序列
+// 设置为false可通过串口命令控制
+bool demoMode = true;
+
+// 控制模式 (DEMO/SERIAL/REMOTE)
+uint8_t ctrlMode = CTRL_MODE_DEMO;
+
+// 遥控器相关变量
+unsigned long lastRemoteCmdTime = 0;   // 上次收到遥控指令的时间
+bool remoteConnected = false;          // 遥控器连接状态
+int remoteSpeedLevel = 5;              // 遥控器速度档位 (0~10)
+#define REMOTE_SPEED_MAX 40            // 遥控器满档位对应的最大速度 (脉冲/5ms)
+
+// 遥控器串口接收缓冲区
+char remoteBuf[32];
+uint8_t remoteBufIdx = 0;
+
+// ============================================================
+// 初始化函数
+// ============================================================
+
+void setup() {
+  // --- 串口初始化 ---
+  Serial.begin(115200);
+  Serial.println(F("========================================"));
+  Serial.println(F("  TB6612 两驱小车控制程序"));
+  Serial.println(F("  平台: Arduino UNO"));
+  Serial.println(F("  驱动: WHEELTEC 四路TB6612 (A口+D口)"));
+  Serial.println(F("  控制: 增量式PI速度闭环"));
+  Serial.println(F("  遥控: ESP-NOW (ESP32-S3→ESP32-C3)"));
+  Serial.println(F("========================================"));
+  Serial.println();
+
+  // --- SoftwareSerial 初始化 (与ESP32-C3通信) ---
+  remoteSerial.begin(9600);
+  Serial.println(F("[初始化] SoftwareSerial 已启动 (9600bps)"));
+  Serial.print(F("[初始化] RX=D"));
+  Serial.print(SOFTSERIAL_RX);
+  Serial.print(F(" TX=D"));
+  Serial.println(SOFTSERIAL_TX);
+
+  // --- TB6612 引脚初始化 ---
+  pinMode(MOTOR_A_PWM,  OUTPUT);
+  pinMode(MOTOR_A_IN1,  OUTPUT);
+  pinMode(MOTOR_A_IN2,  OUTPUT);
+  pinMode(MOTOR_D_PWM,  OUTPUT);
+  pinMode(MOTOR_D_IN1,  OUTPUT);
+  pinMode(MOTOR_D_IN2,  OUTPUT);
+  pinMode(STBY_PIN,     OUTPUT);
+
+  // 初始状态: 电机停止
+  digitalWrite(MOTOR_A_IN1, LOW);
+  digitalWrite(MOTOR_A_IN2, LOW);
+  digitalWrite(MOTOR_D_IN1, LOW);
+  digitalWrite(MOTOR_D_IN2, LOW);
+  analogWrite(MOTOR_A_PWM, 0);
+  analogWrite(MOTOR_D_PWM, 0);
+
+  // 使能TB6612 (STBY = HIGH)
+  digitalWrite(STBY_PIN, HIGH);
+
+  // --- 编码器中断初始化 ---
+  pinMode(ENCODER_LEFT_A,  INPUT_PULLUP);
+  pinMode(ENCODER_RIGHT_A, INPUT_PULLUP);
+
+  // 绑定外部中断 (RISING沿触发)
+  attachInterrupt(digitalPinToInterrupt(ENCODER_LEFT_A),
+                  encoderLeftISR, RISING);
+  attachInterrupt(digitalPinToInterrupt(ENCODER_RIGHT_A),
+                  encoderRightISR, RISING);
+
+  // --- Timer2 初始化 (5ms控制周期) ---
+  // Timer2为8位定时器, 时钟16MHz
+  // 预分频1024: 16MHz/1024 = 15625Hz
+  // OCR2A = 78: 15625/78 ≈ 200.3Hz ≈ 4.99ms
+  initTimer2();
+
+  // --- 初始化完成 ---
+  Serial.println(F("[初始化] 系统就绪"));
+  Serial.println(F("[初始化] 默认状态: 停止"));
+  Serial.println(F("[初始化] 控制模式: 演示模式"));
+  Serial.println(F("----------------------------------------"));
+  Serial.println(F("串口命令:"));
+  Serial.println(F("  w/W - 前进    s/S - 后退"));
+  Serial.println(F("  a/A - 左转    d/D - 右转"));
+  Serial.println(F("  空格 - 停止   r/R - 运行演示"));
+  Serial.println(F("  m/M - 切换控制模式"));
+  Serial.println(F("  +/- - 加速/减速"));
+  Serial.println(F("----------------------------------------"));
+  Serial.println(F("控制模式:"));
+  Serial.println(F("  0=演示  1=串口  2=遥控器"));
+  Serial.println(F("----------------------------------------"));
+
+  // 短暂延时确保系统稳定
+  delay(100);
+}
+
+// ============================================================
+// Timer2 初始化 (5ms控制周期)
+// ============================================================
+
+void initTimer2() {
+  cli();  // 关闭全局中断
+
+  TCCR2A = 0;  // 普通模式
+  TCCR2B = 0;  // 停止定时器
+
+  TCNT2  = 0;  // 计数器清零
+
+  // CTC模式, 预分频1024
+  // WGM21=1 (CTC), CS22=1 CS21=1 CS20=1 (1024预分频)
+  TCCR2A = (1 << WGM21);
+  TCCR2B = (1 << CS22) | (1 << CS21) | (1 << CS20);
+
+  OCR2A  = 77;  // 比较值 (0-77 = 78个计数)
+                // 15625Hz / 78 = 200.32Hz ≈ 4.99ms
+
+  TIMSK2 = (1 << OCIE2A);  // 使能输出比较A中断
+
+  sei();  // 开启全局中断
+}
+
+// ============================================================
+// 编码器中断服务程序
+// ============================================================
+
+// 左电机编码器中断 (INT0, Pin 2)
+void encoderLeftISR() {
+  encoderLeftCount++;
+}
+
+// 右电机编码器中断 (INT1, Pin 3)
+void encoderRightISR() {
+  encoderRightCount++;
+}
+
+// ============================================================
+// Timer2 中断服务程序 (5ms控制周期)
+// 对应原项目 HAL_TIM_PeriodElapsedCallback
+// ============================================================
+
+ISR(TIMER2_COMPA_vect) {
+  // --- 读取编码器值并清零 ---
+  // 对应原项目 Read_Encoder()
+  cli();  // 短暂关中断保护原子操作
+  encoderLeft  = encoderLeftCount;
+  encoderRight = encoderRightCount;
+  encoderLeftCount  = 0;
+  encoderRightCount = 0;
+  sei();
+
+  // --- 运动学分析 ---
+  // 对应原项目 Kinematic_Analysis()
+  // Diff_Car模式: Target_A = velocity + turn, Target_D = velocity - turn
+  targetSpeedA = (int)(velocity + turn);
+  targetSpeedD = (int)(velocity - turn);
+
+  // --- 速度PI闭环控制 ---
+  // 对应原项目 Incremental_PI_A / Incremental_PI_B
+  if (!flagStop) {
+    motorPwmA = incrementalPI_A(encoderLeft,  targetSpeedA);
+    motorPwmD = incrementalPI_D(encoderRight, targetSpeedD);
+
+    // PWM限幅
+    // 对应原项目 Xianfu_Pwm()
+    motorPwmA = constrain(motorPwmA, -PWM_LIMIT, PWM_LIMIT);
+    motorPwmD = constrain(motorPwmD, -PWM_LIMIT, PWM_LIMIT);
+
+    // 设置电机PWM
+    // 对应原项目 Set_Pwm()
+    setMotorPwm(motorPwmA, motorPwmD);
+  } else {
+    // 停止状态: 清零PI积分并停止电机
+    resetPIController();
+    setMotorPwm(0, 0);
+  }
+}
+
+// ============================================================
+// 增量式PI控制器 (MG513XP28_12V优化)
+// 对应原项目 Incremental_PI_A / Incremental_PI_B
+// 公式: Pwm += Kp * (Bias - LastBias) + Ki * Bias
+// ============================================================
+
+int incrementalPI_A(int encoder, int target) {
+  static int biasA     = 0;
+  static int lastBiasA = 0;
+  static int pwmA      = 0;
+
+  biasA = encoder - target;
+  
+  // 增量式PI计算
+  pwmA += (int)(VELOCITY_KP * (biasA - lastBiasA) + VELOCITY_KI * biasA);
+  
+  // 输出限幅 (防止积分饱和)
+  if (pwmA > PID_OUTPUT_MAX) pwmA = PID_OUTPUT_MAX;
+  if (pwmA < PID_OUTPUT_MIN) pwmA = PID_OUTPUT_MIN;
+  
+  lastBiasA = biasA;
+
+  return pwmA;
+}
+
+int incrementalPI_D(int encoder, int target) {
+  static int biasD     = 0;
+  static int lastBiasD = 0;
+  static int pwmD      = 0;
+
+  biasD = encoder - target;
+  
+  // 增量式PI计算
+  pwmD += (int)(VELOCITY_KP * (biasD - lastBiasD) + VELOCITY_KI * biasD);
+  
+  // 输出限幅 (防止积分饱和)
+  if (pwmD > PID_OUTPUT_MAX) pwmD = PID_OUTPUT_MAX;
+  if (pwmD < PID_OUTPUT_MIN) pwmD = PID_OUTPUT_MIN;
+  
+  lastBiasD = biasD;
+
+  return pwmD;
+}
+
+// ============================================================
+// 重置PI控制器 (停止时清零积分)
+// ============================================================
+
+void resetPIController() {
+  // 清零PI控制器的内部状态
+  // 由于使用静态变量, 需要通过特殊方式重置
+  // 调用时传入target=0, encoder=0来重置
+  incrementalPI_A(0, 0);
+  incrementalPI_D(0, 0);
+  
+  // 直接设置PWM输出为0
+  motorPwmA = 0;
+  motorPwmD = 0;
+}
+
+// ============================================================
+// 设置电机PWM和方向
+// 对应原项目 Set_Pwm()
+// pwmA > 0: 左电机(A口)正转, pwmA < 0: 左电机反转
+// pwmB > 0: 右电机(D口)正转, pwmB < 0: 右电机反转
+// ============================================================
+
+void setMotorPwm(int pwmA, int pwmB) {
+  // --- 电机A (左侧, 模块A口) ---
+  if (pwmA > 0) {
+    // 正转 (前进方向)
+    digitalWrite(MOTOR_A_IN1, LOW);
+    digitalWrite(MOTOR_A_IN2, HIGH);
+  } else if (pwmA < 0) {
+    // 反转 (后退方向)
+    digitalWrite(MOTOR_A_IN1, HIGH);
+    digitalWrite(MOTOR_A_IN2, LOW);
+  } else {
+    // 停止 (短制动)
+    digitalWrite(MOTOR_A_IN1, LOW);
+    digitalWrite(MOTOR_A_IN2, LOW);
+  }
+  analogWrite(MOTOR_A_PWM, abs(pwmA));
+
+  // --- 电机D (右侧, 模块D口) ---
+  if (pwmB > 0) {
+    digitalWrite(MOTOR_D_IN1, LOW);
+    digitalWrite(MOTOR_D_IN2, HIGH);
+  } else if (pwmB < 0) {
+    digitalWrite(MOTOR_D_IN1, HIGH);
+    digitalWrite(MOTOR_D_IN2, LOW);
+  } else {
+    digitalWrite(MOTOR_D_IN1, LOW);
+    digitalWrite(MOTOR_D_IN2, LOW);
+  }
+  analogWrite(MOTOR_D_PWM, abs(pwmB));
+}
+
+// ============================================================
+// 运动控制函数
+// ============================================================
+
+// 前进
+void moveForward(int speedVal) {
+  velocity = speedVal;
+  turn     = 0;
+  flagStop = false;
+  Serial.print(F("[运动] 前进  速度="));
+  Serial.println(speedVal);
+}
+
+// 后退
+void moveBackward(int speedVal) {
+  velocity = -speedVal;
+  turn     = 0;
+  flagStop = false;
+  Serial.print(F("[运动] 后退  速度="));
+  Serial.println(speedVal);
+}
+
+// 左转 (原地左转: 左轮后退, 右轮前进)
+void turnLeft(int speedVal) {
+  velocity = 0;
+  turn     = -speedVal;
+  flagStop = false;
+  Serial.print(F("[运动] 左转  差速="));
+  Serial.println(speedVal);
+}
+
+// 右转 (原地右转: 左轮前进, 右轮后退)
+void turnRight(int speedVal) {
+  velocity = 0;
+  turn     = speedVal;
+  flagStop = false;
+  Serial.print(F("[运动] 右转  差速="));
+  Serial.println(speedVal);
+}
+
+// 左前转 (前进+左转)
+void moveForwardLeft(int speedVal, int turnVal) {
+  velocity = speedVal;
+  turn     = -turnVal;
+  flagStop = false;
+  Serial.print(F("[运动] 左前转  速度="));
+  Serial.print(speedVal);
+  Serial.print(F(" 差速="));
+  Serial.println(turnVal);
+}
+
+// 右前转 (前进+右转)
+void moveForwardRight(int speedVal, int turnVal) {
+  velocity = speedVal;
+  turn     = turnVal;
+  flagStop = false;
+  Serial.print(F("[运动] 右前转  速度="));
+  Serial.print(speedVal);
+  Serial.print(F(" 差速="));
+  Serial.println(turnVal);
+}
+
+// 停止
+void moveStop() {
+  velocity = 0;
+  turn     = 0;
+  flagStop = true;
+  Serial.println(F("[运动] 停止"));
+}
+
+// ============================================================
+// 电池电压检测 (模拟输入)
+// 对应原项目 Turn_Off() 中的电压检测逻辑
+// ============================================================
+
+float readBatteryVoltage() {
+  // 使用电阻分压: 12V -> 约4.5V (适合Arduino 5V ADC)
+  // 分压比: R1=10kΩ, R2=4.7kΩ → Vout = Vin * 4.7/(10+4.7) ≈ Vin * 0.32
+  // 12V * 0.32 = 3.84V (在ADC范围内)
+  // 如需使用, 请将分压输出连接到A0引脚
+
+  int adcValue = analogRead(A0);
+  // Arduino ADC: 10位, 0-1023对应0-5V
+  float measuredVoltage = adcValue * (5.0f / 1023.0f);
+  // 根据分压比反算实际电池电压
+  float actualVoltage = measuredVoltage / 0.32f;
+
+  return actualVoltage;
+}
+
+// 电池低压保护检查
+// 对应原项目 Turn_Off()
+bool checkBatteryLow() {
+  batteryVoltage = readBatteryVoltage();
+
+  if (batteryVoltage < BATTERY_LOW) {
+    Serial.print(F("[警告] 电池电压过低: "));
+    Serial.print(batteryVoltage);
+    Serial.println(F("V, 电机已停止"));
+    return true;
+  }
+  return false;
+}
+
+// ============================================================
+// 演示序列
+// 对应原项目 Get_RC() 中的蓝牙控制逻辑
+// ============================================================
+
+void runDemoSequence() {
+  static int demoStep = 0;
+  static unsigned long demoLastTime = 0;
+  unsigned long currentTime = millis();
+
+  // 每步持续2秒
+  if (currentTime - demoLastTime < 2000) return;
+  demoLastTime = currentTime;
+
+  // 检查电池电压
+  if (checkBatteryLow()) {
+    moveStop();
+    return;
+  }
+
+  switch (demoStep) {
+    case 0:
+      Serial.println(F("\n=== 演示: 前进 ==="));
+      moveForward(DEFAULT_SPEED);
+      break;
+    case 1:
+      Serial.println(F("\n=== 演示: 停止 ==="));
+      moveStop();
+      break;
+    case 2:
+      Serial.println(F("\n=== 演示: 后退 ==="));
+      moveBackward(DEFAULT_SPEED);
+      break;
+    case 3:
+      Serial.println(F("\n=== 演示: 停止 ==="));
+      moveStop();
+      break;
+    case 4:
+      Serial.println(F("\n=== 演示: 原地左转 ==="));
+      turnLeft(DEFAULT_TURN);
+      break;
+    case 5:
+      Serial.println(F("\n=== 演示: 停止 ==="));
+      moveStop();
+      break;
+    case 6:
+      Serial.println(F("\n=== 演示: 原地右转 ==="));
+      turnRight(DEFAULT_TURN);
+      break;
+    case 7:
+      Serial.println(F("\n=== 演示: 停止 ==="));
+      moveStop();
+      break;
+    case 8:
+      Serial.println(F("\n=== 演示: 左前转 ==="));
+      moveForwardLeft(DEFAULT_SPEED, DEFAULT_TURN);
+      break;
+    case 9:
+      Serial.println(F("\n=== 演示: 停止 ==="));
+      moveStop();
+      break;
+    case 10:
+      Serial.println(F("\n=== 演示: 右前转 ==="));
+      moveForwardRight(DEFAULT_SPEED, DEFAULT_TURN);
+      break;
+    case 11:
+      Serial.println(F("\n=== 演示: 停止 ==="));
+      moveStop();
+      break;
+    case 12:
+      Serial.println(F("\n=== 演示序列完成, 重新开始 ==="));
+      demoStep = -1;  // 循环
+      break;
+  }
+  demoStep++;
+}
+
+// ============================================================
+// 串口命令处理
+// ============================================================
+
+void handleSerialCommand() {
+  if (!Serial.available()) return;
+
+  char cmd = Serial.read();
+
+  // 忽略换行和回车
+  if (cmd == '\n' || cmd == '\r') return;
+
+  switch (cmd) {
+    case 'w':
+    case 'W':
+      demoMode = false;
+      moveForward(DEFAULT_SPEED);
+      break;
+
+    case 's':
+    case 'S':
+      demoMode = false;
+      moveBackward(DEFAULT_SPEED);
+      break;
+
+    case 'a':
+    case 'A':
+      demoMode = false;
+      turnLeft(DEFAULT_TURN);
+      break;
+
+    case 'd':
+    case 'D':
+      demoMode = false;
+      turnRight(DEFAULT_TURN);
+      break;
+
+    case 'q':
+    case 'Q':
+      demoMode = false;
+      moveForwardLeft(DEFAULT_SPEED, DEFAULT_TURN);
+      break;
+
+    case 'e':
+    case 'E':
+      demoMode = false;
+      moveForwardRight(DEFAULT_SPEED, DEFAULT_TURN);
+      break;
+
+    case ' ':
+      demoMode = false;
+      moveStop();
+      break;
+
+    case 'r':
+    case 'R':
+      ctrlMode = CTRL_MODE_DEMO;
+      demoMode = true;
+      Serial.println(F("[模式] 切换到演示模式"));
+      break;
+
+    case 'm':
+    case 'M':
+      ctrlMode = (ctrlMode + 1) % 3;
+      demoMode = (ctrlMode == CTRL_MODE_DEMO);
+      Serial.print(F("[模式] 切换到: "));
+      switch (ctrlMode) {
+        case CTRL_MODE_DEMO:   Serial.println(F("演示模式")); break;
+        case CTRL_MODE_SERIAL: Serial.println(F("串口命令模式")); break;
+        case CTRL_MODE_REMOTE: Serial.println(F("遥控器模式")); break;
+      }
+      break;
+
+    case '+':
+    case '=':
+      // 加速 (调整DEFAULT_SPEED引用, 这里使用velocity变量)
+      if (!flagStop) {
+        float newVel = velocity + 5;
+        velocity = constrain(newVel, -100, 100);
+        Serial.print(F("[速度] 当前速度="));
+        Serial.println(velocity);
+      }
+      break;
+
+    case '-':
+    case '_':
+      if (!flagStop) {
+        float newVel = velocity - 5;
+        velocity = constrain(newVel, -100, 100);
+        Serial.print(F("[速度] 当前速度="));
+        Serial.println(velocity);
+      }
+      break;
+
+    case 'i':
+    case 'I':
+      // 打印状态信息
+      printStatus();
+      break;
+
+    default:
+      Serial.print(F("[提示] 未知命令: "));
+      Serial.println(cmd);
+      break;
+  }
+}
+
+// ============================================================
+// 遥控器命令处理 (来自ESP32-C3的SoftwareSerial)
+// ============================================================
+// 协议格式: "$V<vel>,T<turn>,F<flags>,S<speed>*\n"
+// 示例: "$V50,T0,F0,S5*\n"
+//   vel:   -100~100 (速度百分比)
+//   turn:  -100~100 (转向百分比)
+//   flags: 0=正常, 1=急停
+//   speed: 0~10 (速度档位)
+
+void handleRemoteCommand() {
+  while (remoteSerial.available()) {
+    char c = remoteSerial.read();
+
+    if (c == '\n' || c == '\r') {
+      if (remoteBufIdx > 0) {
+        remoteBuf[remoteBufIdx] = '\0';
+        parseRemoteCommand(remoteBuf);
+        remoteBufIdx = 0;
+      }
+      continue;
+    }
+
+    if (remoteBufIdx < 31) {
+      remoteBuf[remoteBufIdx++] = c;
+    } else {
+      remoteBufIdx = 0;
+    }
+  }
+}
+
+void parseRemoteCommand(const char *cmd) {
+  if (cmd[0] != '$' || cmd[1] != 'V') return;
+
+  const char *p = cmd;
+
+  int vel = 0, turn = 0, flags = 0, speed = 0;
+
+  p += 2;
+  vel = atoi(p);
+
+  p = strstr(p, ",T");
+  if (!p) return;
+  p += 2;
+  turn = atoi(p);
+
+  p = strstr(p, ",F");
+  if (!p) return;
+  p += 2;
+  flags = atoi(p);
+
+  p = strstr(p, ",S");
+  if (!p) return;
+  p += 2;
+  speed = atoi(p);
+
+  lastRemoteCmdTime = millis();
+  remoteConnected = true;
+
+  if (ctrlMode != CTRL_MODE_REMOTE) {
+    ctrlMode = CTRL_MODE_REMOTE;
+    demoMode = false;
+    Serial.println(F("[遥控] 检测到遥控器, 自动切换到遥控模式"));
+  }
+
+  if (flags & 0x01) {
+    moveStop();
+    return;
+  }
+
+  float scaleFactor = (float)speed / 10.0f;
+  int maxSpeed = (int)(REMOTE_SPEED_MAX * scaleFactor);
+  if (maxSpeed < 1) maxSpeed = 1;
+
+  velocity = (float)map(vel, -100, 100, -maxSpeed, maxSpeed);
+  turn     = (float)map(turn, -100, 100, -maxSpeed, maxSpeed);
+
+  flagStop = false;
+  remoteSpeedLevel = speed;
+}
+
+// ============================================================
+// 遥控器超时检测
+// ============================================================
+
+void checkRemoteTimeout() {
+  if (!remoteConnected) return;
+
+  if (millis() - lastRemoteCmdTime > REMOTE_TIMEOUT) {
+    remoteConnected = false;
+    Serial.println(F("[遥控] 遥控器超时! 自动停车"));
+    moveStop();
+  }
+}
+
+// ============================================================
+// 向ESP32-C3回传编码器数据
+// ============================================================
+
+void sendEncoderFeedback() {
+  remoteSerial.print(F("#E"));
+  remoteSerial.print(constrain(encoderLeft, -127, 127));
+  remoteSerial.print(F(","));
+  remoteSerial.print(constrain(encoderRight, -127, 127));
+  remoteSerial.print(F(","));
+  remoteSerial.print(motorPwmA);
+  remoteSerial.print(F(","));
+  remoteSerial.print(motorPwmD);
+  remoteSerial.println(F(","));
+}
+
+// ============================================================
+// 状态打印
+// ============================================================
+
+void printStatus() {
+  Serial.println(F("----------------------------------------"));
+  Serial.print(F("系统状态: "));
+  Serial.println(flagStop ? F("停止") : F("运行中"));
+  Serial.print(F("控制模式: "));
+  switch (ctrlMode) {
+    case CTRL_MODE_DEMO:   Serial.println(F("演示")); break;
+    case CTRL_MODE_SERIAL: Serial.println(F("串口")); break;
+    case CTRL_MODE_REMOTE: Serial.println(F("遥控器")); break;
+  }
+  Serial.print(F("遥控器: "));
+  Serial.print(remoteConnected ? F("在线") : F("离线"));
+  if (remoteConnected) {
+    Serial.print(F(" 档位="));
+    Serial.print(remoteSpeedLevel);
+  }
+  Serial.println();
+  Serial.print(F("目标速度A: "));
+  Serial.print(targetSpeedA);
+  Serial.print(F("  目标速度D: "));
+  Serial.println(targetSpeedD);
+  Serial.print(F("编码器A: "));
+  Serial.print(encoderLeft);
+  Serial.print(F("  编码器D: "));
+  Serial.println(encoderRight);
+  Serial.print(F("PWM输出A: "));
+  Serial.print(motorPwmA);
+  Serial.print(F("  PWM输出D: "));
+  Serial.println(motorPwmD);
+  Serial.print(F("电池电压: "));
+  Serial.print(batteryVoltage);
+  Serial.println(F("V"));
+  Serial.println(F("----------------------------------------"));
+}
+
+// ============================================================
+// 主循环
+// ============================================================
+
+void loop() {
+  // 处理USB串口命令
+  handleSerialCommand();
+
+  // 处理遥控器命令 (来自ESP32-C3)
+  handleRemoteCommand();
+
+  // 遥控器超时检测
+  if (ctrlMode == CTRL_MODE_REMOTE) {
+    checkRemoteTimeout();
+  }
+
+  // 演示模式
+  if (ctrlMode == CTRL_MODE_DEMO && demoMode) {
+    runDemoSequence();
+  }
+
+  // 向ESP32-C3回传编码器数据 (每200ms)
+  static unsigned long lastFeedbackTime = 0;
+  if (millis() - lastFeedbackTime >= 200) {
+    lastFeedbackTime = millis();
+    sendEncoderFeedback();
+  }
+
+  // 定期打印状态 (每2秒)
+  static unsigned long lastPrintTime = 0;
+  if (millis() - lastPrintTime >= 2000) {
+    lastPrintTime = millis();
+    if (!flagStop) {
+      Serial.print(F("[状态] 编码器L="));
+      Serial.print(encoderLeft);
+      Serial.print(F(" R="));
+      Serial.print(encoderRight);
+      Serial.print(F(" PWM_A="));
+      Serial.print(motorPwmA);
+      Serial.print(F(" PWM_D="));
+      Serial.println(motorPwmD);
+    }
+  }
+}
