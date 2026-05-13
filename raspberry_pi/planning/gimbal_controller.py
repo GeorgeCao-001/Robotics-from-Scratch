@@ -1,5 +1,5 @@
 from .config import PlanningConfig
-from .types import GimbalCommand, VisionTarget
+from .types import GimbalOutput, VisionTarget
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -14,6 +14,14 @@ class GimbalController:
         self._tilt_abs = _clamp(config.tilt_center, config.tilt_min, config.tilt_max)
         self._last_pan = 0.0
         self._last_tilt = 0.0
+
+    @property
+    def pan_abs(self) -> float:
+        return self._pan_abs
+
+    @property
+    def tilt_abs(self) -> float:
+        return self._tilt_abs
 
     def _wrap_to_signed_180(self, angle: float) -> float:
         wrapped = ((angle + 180.0) % 360.0) - 180.0
@@ -30,7 +38,7 @@ class GimbalController:
         self._last_pan = 0.0
         self._last_tilt = 0.0
 
-    def compute(self, target: VisionTarget) -> GimbalCommand:
+    def compute(self, target: VisionTarget) -> GimbalOutput:
         x_err = target.x_error_norm
         y_err = target.y_error_norm
 
@@ -42,23 +50,18 @@ class GimbalController:
         pan_span = 180.0
         tilt_span = self._cfg.tilt_max - self._cfg.tilt_min
 
-        # P control for pan & tilt
         pan = self._cfg.kp_pan * x_err * pan_span
         tilt = -self._cfg.kp_tilt * y_err * tilt_span
 
-        # momentum smoothing for pan & tilt
         a = self._cfg.smoothing_alpha_gimbal
         pan = a * pan + (1.0 - a) * self._last_pan
         tilt = a * tilt + (1.0 - a) * self._last_tilt
 
-        # avoid pan from going to above 180 or below -180
         pan = _clamp(pan, self._cfg.pan_min, self._cfg.pan_max)
 
-        # total pan -> output for the car
         self._pan_total_offset += pan
         self._pan_abs = self._wrap_to_signed_180(self._pan_total_offset)
 
-        # avoid tilt from going above 180 or below 0
         tilt_next = _clamp(
             self._tilt_abs + tilt, self._cfg.tilt_min, self._cfg.tilt_max
         )
@@ -68,8 +71,9 @@ class GimbalController:
         self._last_pan = pan
         self._last_tilt = tilt
 
-        return {
-            "cmd": "gimbal",
-            "pan": round(pan, 3),
-            "tilt": round(tilt, 3),
-        }
+        return GimbalOutput(
+            pan_delta=round(pan, 3),
+            tilt_delta=round(tilt, 3),
+            pan_abs=round(self._pan_abs, 3),
+            tilt_abs=round(self._tilt_abs, 3),
+        )

@@ -27,3 +27,6 @@ class PlanningConfig:
     smoothing_alpha_move: float = 0.3
     smoothing_alpha_gimbal: float = 0.5
     lost_timeout_s: float = 0.8
+
+    gimbal_pan_pin: int = 17
+    gimbal_tilt_pin: int = 27

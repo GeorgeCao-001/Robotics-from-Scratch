@@ -7,16 +7,16 @@ from dataclasses import dataclass
 from math import isfinite
 from typing import Any, Callable
 
-from raspberry_pi.hardware import SerialComm, SerialConfig
+from raspberry_pi.hardware import GimbalConfig, GimbalHardware, SerialComm, SerialConfig
 from raspberry_pi.planning.config import PlanningConfig
 from raspberry_pi.planning.planner import Planner
-from raspberry_pi.planning.types import VisionTarget
+from raspberry_pi.planning.types import GimbalOutput, VisionTarget
 
 
 @dataclass(frozen=True)
 class RuntimeConfig:
     port: str
-    baudrate: int = 9600
+    baudrate: int = 115200
     camera_backend: str = "opencv"
     camera_id: int = 0
     show_window: bool = False
@@ -98,9 +98,21 @@ def _to_vision_target(pose_info: dict[str, Any]) -> VisionTarget | None:
     )
 
 
+def _dispatch_gimbal(
+    gimbal: GimbalOutput,
+    hw: GimbalHardware,
+) -> None:
+    try:
+        hw.write(gimbal.pan_delta, gimbal.tilt_abs)
+    except Exception as exc:
+        print(f"[MAIN] gimbal write failed: {exc}")
+        raise
+
+
 def _run_control_loop(
     planner: Planner,
     comm: SerialComm,
+    gimbal_hw: GimbalHardware,
     shared: SharedVisionState,
     runtime: RuntimeConfig,
     vision_alive: Callable[[], bool],
@@ -128,12 +140,21 @@ def _run_control_loop(
         last_t = now_t
 
         target = shared.get(now_t, runtime.detection_stale_s)
-        cmds = planner.update(target, dt_s)
+        move_cmd, gimbal = planner.update(target, dt_s)
         try:
-            for cmd in cmds:
-                comm.send_message(cmd)
+            comm.send_message(move_cmd)
         except Exception as exc:
             print(f"[MAIN] send failed: {exc}")
+            on_fatal_error(exc)
+            try:
+                comm.send_stop()
+            except Exception:
+                pass
+            return
+
+        try:
+            _dispatch_gimbal(gimbal, gimbal_hw)
+        except Exception as exc:
             on_fatal_error(exc)
             try:
                 comm.send_stop()
@@ -153,14 +174,19 @@ def _run_control_loop(
 
         elapsed = now_fn() - loop_start_t
         sleep_fn(max(0.0, period_s - elapsed))
-        # nothing dealing with frame drops if it happens
-        # but not that urgent
 
 
 def run(runtime: RuntimeConfig) -> None:
-    planner = Planner(PlanningConfig())
+    planning_config = PlanningConfig()
+    planner = Planner(planning_config)
     shared = SharedVisionState()
     comm = SerialComm(SerialConfig(port=runtime.port, baudrate=runtime.baudrate))
+    gimbal_hw = GimbalHardware(
+        GimbalConfig(
+            pan_pin=planning_config.gimbal_pan_pin,
+            tilt_pin=planning_config.gimbal_tilt_pin,
+        )
+    )
     stop_event = threading.Event()
 
     def on_detected(pose_info: dict[str, Any]) -> None:
@@ -175,6 +201,7 @@ def run(runtime: RuntimeConfig) -> None:
         _run_control_loop(
             planner=planner,
             comm=comm,
+            gimbal_hw=gimbal_hw,
             shared=shared,
             runtime=runtime,
             vision_alive=lambda: not stop_event.is_set(),
@@ -228,6 +255,10 @@ def run(runtime: RuntimeConfig) -> None:
             comm.send_stop()
         except Exception:
             pass
+        try:
+            gimbal_hw.cleanup()
+        except Exception:
+            pass
         comm.close()
 
 
@@ -236,7 +267,7 @@ def _parse_args() -> RuntimeConfig:
     parser.add_argument(
         "--port", required=True, help="Serial port, e.g. /dev/ttyACM0 (Linux) or /dev/cu.usbmodemxxxx (macOS)"
     )
-    parser.add_argument("--baudrate", type=int, default=9600, help="UART baudrate")
+    parser.add_argument("--baudrate", type=int, default=115200, help="UART baudrate")
     parser.add_argument(
         "--camera-backend",
         choices=["opencv", "rpicam"],

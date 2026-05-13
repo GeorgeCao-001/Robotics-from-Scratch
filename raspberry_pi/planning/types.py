@@ -17,7 +17,9 @@ class MoveCommand(TypedDict):
     w: float
 
 
-class GimbalCommand(TypedDict):
-    cmd: str
-    pan: float
-    tilt: float
+@dataclass(frozen=True)
+class GimbalOutput:
+    pan_delta: float
+    tilt_delta: float
+    pan_abs: float
+    tilt_abs: float
