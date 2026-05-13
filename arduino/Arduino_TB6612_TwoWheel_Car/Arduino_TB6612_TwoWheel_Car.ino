@@ -161,8 +161,7 @@ uint8_t ctrlMode = CTRL_MODE_DEMO;
 // 遥控器相关变量
 unsigned long lastRemoteCmdTime = 0;   // 上次收到遥控指令的时间
 bool remoteConnected = false;          // 遥控器连接状态
-int remoteSpeedLevel = 5;              // 遥控器速度档位 (0~10)
-#define REMOTE_SPEED_MAX 40            // 遥控器满档位对应的最大速度 (脉冲/5ms)
+#define REMOTE_SPEED_MAX 40            // 遥控器摇杆满偏对应的最大速度 (脉冲/5ms)
 
 // 遥控器串口接收缓冲区
 char remoteBuf[32];
@@ -718,12 +717,11 @@ void handleSerialCommand() {
 // ============================================================
 // 遥控器命令处理 (来自ESP32-C3的SoftwareSerial)
 // ============================================================
-// 协议格式: "$V<vel>,T<turn>,F<flags>,S<speed>*\n"
-// 示例: "$V50,T0,F0,S5*\n"
-//   vel:   -100~100 (速度百分比)
-//   turn:  -100~100 (转向百分比)
-//   flags: 0=正常, 1=急停
-//   speed: 0~10 (速度档位)
+// 协议格式: "$V<vel>,T<turn>,F<flags>*\n"
+// 示例: "$V50,T0,F0*\n"
+//   vel:   -100~100 (速度百分比, 左摇杆Y轴)
+//   turn:  -100~100 (转向百分比, 右摇杆X轴)
+//   flags: bit0=自动模式 (0=手动, 1=自动)
 
 void handleRemoteCommand() {
   while (remoteSerial.available()) {
@@ -751,7 +749,7 @@ void parseRemoteCommand(const char *cmd) {
 
   const char *p = cmd;
 
-  int vel = 0, turn = 0, flags = 0, speed = 0;
+  int vel = 0, turn = 0, flags = 0;
 
   p += 2;
   vel = atoi(p);
@@ -766,34 +764,27 @@ void parseRemoteCommand(const char *cmd) {
   p += 2;
   flags = atoi(p);
 
-  p = strstr(p, ",S");
-  if (!p) return;
-  p += 2;
-  speed = atoi(p);
-
   lastRemoteCmdTime = millis();
   remoteConnected = true;
 
   if (ctrlMode != CTRL_MODE_REMOTE) {
     ctrlMode = CTRL_MODE_REMOTE;
-    demoMode = false;
     Serial.println(F("[遥控] 检测到遥控器, 自动切换到遥控模式"));
   }
 
   if (flags & 0x01) {
-    moveStop();
+    ctrlMode = CTRL_MODE_DEMO;
+    demoMode = true;
+    Serial.println(F("[遥控] 切换到自动运行模式"));
     return;
   }
 
-  float scaleFactor = (float)speed / 10.0f;
-  int maxSpeed = (int)(REMOTE_SPEED_MAX * scaleFactor);
-  if (maxSpeed < 1) maxSpeed = 1;
+  demoMode = false;
 
-  velocity = (float)map(vel, -100, 100, -maxSpeed, maxSpeed);
-  turn     = (float)map(turn, -100, 100, -maxSpeed, maxSpeed);
+  velocity = (float)map(vel, -100, 100, -REMOTE_SPEED_MAX, REMOTE_SPEED_MAX);
+  turn     = (float)map(turn, -100, 100, -REMOTE_SPEED_MAX, REMOTE_SPEED_MAX);
 
   flagStop = false;
-  remoteSpeedLevel = speed;
 }
 
 // ============================================================
@@ -842,10 +833,6 @@ void printStatus() {
   }
   Serial.print(F("遥控器: "));
   Serial.print(remoteConnected ? F("在线") : F("离线"));
-  if (remoteConnected) {
-    Serial.print(F(" 档位="));
-    Serial.print(remoteSpeedLevel);
-  }
   Serial.println();
   Serial.print(F("目标速度A: "));
   Serial.print(targetSpeedA);
