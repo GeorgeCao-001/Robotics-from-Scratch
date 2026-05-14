@@ -4,10 +4,10 @@
  * 基于 L130_模块化小车_S28A_HAL库 的控制逻辑移植
  *
  * 硬件平台: Arduino UNO (ATmega328P, 16MHz)
- * 驱动模块: WHEELTEC 四路TB6612FNG (双芯片, 端口A/B/C/D)
+ * 驱动模块: TB6612FNG 双路H桥电机驱动 (A口+B口)
  * 电机类型: MG513XP28_12V (WHEELTEC带霍尔编码器直流减速电机)
  * 电机接口: 5线集成接口 (电机电源×2 + 编码器×3)
- * 电机连接: 左电机→A口, 右电机→D口
+ * 电机连接: 左电机→A口, 右电机→B口
  * 供电方式: 12V锂电池组 (3S, 标称11.1V~12.6V)
  * 小车结构: 三轮结构 (两驱动轮 + 前部万向轮)
  *
@@ -31,13 +31,13 @@
 #define MOTOR_A_IN1   7     // AIN1 - 方向控制1
 #define MOTOR_A_IN2   6     // AIN2 - 方向控制2
 
-// 右电机 → 模块D口 (TB6612 Chip2)
-#define MOTOR_D_PWM   10    // PWMD - PWM调速
-#define MOTOR_D_IN1   8     // DIN1 - 方向控制1
-#define MOTOR_D_IN2   12    // DIN2 - 方向控制2
+// 右电机 → 模块B口 (TB6612 单芯片, A口控制左电机, B口控制右电机)
+#define MOTOR_B_PWM   10    // PWMB - PWM调速
+#define MOTOR_B_IN1   8     // BIN1 - 方向控制1
+#define MOTOR_B_IN2   12    // BIN2 - 方向控制2
 
-// TB6612 待机控制 (两个芯片的STBY可并联共用一个引脚)
-#define STBY_PIN      4     // STBY (HIGH=正常工作, LOW=待机)
+// TB6612 待机控制 (STBY=HIGH正常工作, LOW=待机)
+#define STBY_PIN      4     // STBY
 
 // ============================================================
 // 引脚定义 - 霍尔编码器
@@ -153,19 +153,37 @@ unsigned long lastControlTime = 0;
 
 // 演示模式: 自动运行演示序列
 // 设置为false可通过串口命令控制
-bool demoMode = true;
+bool demoMode = false;
 
 // 控制模式 (DEMO/SERIAL/REMOTE)
-uint8_t ctrlMode = CTRL_MODE_DEMO;
+uint8_t ctrlMode = CTRL_MODE_REMOTE;
 
 // 遥控器相关变量
 unsigned long lastRemoteCmdTime = 0;   // 上次收到遥控指令的时间
 bool remoteConnected = false;          // 遥控器连接状态
 #define REMOTE_SPEED_MAX 40            // 遥控器摇杆满偏对应的最大速度 (脉冲/5ms)
+#define REMOTE_PWM_MAX 220             // 遥控模式下的最大PWM输出
+#define REMOTE_TURN_PWM_MAX 200        // 遥控模式下的最大转向PWM
+#define REMOTE_INPUT_DEADZONE 10       // 遥控输入死区 (%)
+#define FLAG_AUTO_MODE 0x01
+#define FLAG_MODE_SWITCH_REQUEST 0x02
 
 // 遥控器串口接收缓冲区
 char remoteBuf[32];
 uint8_t remoteBufIdx = 0;
+
+// 遥控模式下直接PWM混控输出
+bool directPwmControl = false;
+int directPwmLeft = 0;
+int directPwmRight = 0;
+
+// PI控制器内部状态
+int piBiasA = 0;
+int piLastBiasA = 0;
+int piPwmA = 0;
+int piBiasD = 0;
+int piLastBiasD = 0;
+int piPwmD = 0;
 
 // ============================================================
 // 初始化函数
@@ -177,7 +195,7 @@ void setup() {
   Serial.println(F("========================================"));
   Serial.println(F("  TB6612 两驱小车控制程序"));
   Serial.println(F("  平台: Arduino UNO"));
-  Serial.println(F("  驱动: WHEELTEC 四路TB6612 (A口+D口)"));
+  Serial.println(F("  驱动: TB6612 双路H桥 (A口+B口)"));
   Serial.println(F("  控制: 增量式PI速度闭环"));
   Serial.println(F("  遥控: ESP-NOW (ESP32-S3→ESP32-C3)"));
   Serial.println(F("========================================"));
@@ -195,18 +213,19 @@ void setup() {
   pinMode(MOTOR_A_PWM,  OUTPUT);
   pinMode(MOTOR_A_IN1,  OUTPUT);
   pinMode(MOTOR_A_IN2,  OUTPUT);
-  pinMode(MOTOR_D_PWM,  OUTPUT);
-  pinMode(MOTOR_D_IN1,  OUTPUT);
-  pinMode(MOTOR_D_IN2,  OUTPUT);
+  pinMode(MOTOR_B_PWM,  OUTPUT);
+  pinMode(MOTOR_B_IN1,  OUTPUT);
+  pinMode(MOTOR_B_IN2,  OUTPUT);
   pinMode(STBY_PIN,     OUTPUT);
 
   // 初始状态: 电机停止
   digitalWrite(MOTOR_A_IN1, LOW);
   digitalWrite(MOTOR_A_IN2, LOW);
-  digitalWrite(MOTOR_D_IN1, LOW);
-  digitalWrite(MOTOR_D_IN2, LOW);
+  digitalWrite(MOTOR_B_IN1, LOW);
+  digitalWrite(MOTOR_B_IN2, LOW);
+
   analogWrite(MOTOR_A_PWM, 0);
-  analogWrite(MOTOR_D_PWM, 0);
+  analogWrite(MOTOR_B_PWM, 0);
 
   // 使能TB6612 (STBY = HIGH)
   digitalWrite(STBY_PIN, HIGH);
@@ -230,7 +249,7 @@ void setup() {
   // --- 初始化完成 ---
   Serial.println(F("[初始化] 系统就绪"));
   Serial.println(F("[初始化] 默认状态: 停止"));
-  Serial.println(F("[初始化] 控制模式: 演示模式"));
+  Serial.println(F("[初始化] 控制模式: 遥控器模式"));
   Serial.println(F("----------------------------------------"));
   Serial.println(F("串口命令:"));
   Serial.println(F("  w/W - 前进    s/S - 后退"));
@@ -310,6 +329,11 @@ ISR(TIMER2_COMPA_vect) {
   // --- 速度PI闭环控制 ---
   // 对应原项目 Incremental_PI_A / Incremental_PI_B
   if (!flagStop) {
+    if (directPwmControl) {
+      setMotorPwm(directPwmLeft, directPwmRight);
+      return;
+    }
+
     motorPwmA = incrementalPI_A(encoderLeft,  targetSpeedA);
     motorPwmD = incrementalPI_D(encoderRight, targetSpeedD);
 
@@ -335,41 +359,33 @@ ISR(TIMER2_COMPA_vect) {
 // ============================================================
 
 int incrementalPI_A(int encoder, int target) {
-  static int biasA     = 0;
-  static int lastBiasA = 0;
-  static int pwmA      = 0;
-
-  biasA = encoder - target;
+  piBiasA = encoder - target;
   
   // 增量式PI计算
-  pwmA += (int)(VELOCITY_KP * (biasA - lastBiasA) + VELOCITY_KI * biasA);
+  piPwmA += (int)(VELOCITY_KP * (piBiasA - piLastBiasA) + VELOCITY_KI * piBiasA);
   
   // 输出限幅 (防止积分饱和)
-  if (pwmA > PID_OUTPUT_MAX) pwmA = PID_OUTPUT_MAX;
-  if (pwmA < PID_OUTPUT_MIN) pwmA = PID_OUTPUT_MIN;
+  if (piPwmA > PID_OUTPUT_MAX) piPwmA = PID_OUTPUT_MAX;
+  if (piPwmA < PID_OUTPUT_MIN) piPwmA = PID_OUTPUT_MIN;
   
-  lastBiasA = biasA;
+  piLastBiasA = piBiasA;
 
-  return pwmA;
+  return piPwmA;
 }
 
 int incrementalPI_D(int encoder, int target) {
-  static int biasD     = 0;
-  static int lastBiasD = 0;
-  static int pwmD      = 0;
-
-  biasD = encoder - target;
+  piBiasD = encoder - target;
   
   // 增量式PI计算
-  pwmD += (int)(VELOCITY_KP * (biasD - lastBiasD) + VELOCITY_KI * biasD);
+  piPwmD += (int)(VELOCITY_KP * (piBiasD - piLastBiasD) + VELOCITY_KI * piBiasD);
   
   // 输出限幅 (防止积分饱和)
-  if (pwmD > PID_OUTPUT_MAX) pwmD = PID_OUTPUT_MAX;
-  if (pwmD < PID_OUTPUT_MIN) pwmD = PID_OUTPUT_MIN;
+  if (piPwmD > PID_OUTPUT_MAX) piPwmD = PID_OUTPUT_MAX;
+  if (piPwmD < PID_OUTPUT_MIN) piPwmD = PID_OUTPUT_MIN;
   
-  lastBiasD = biasD;
+  piLastBiasD = piBiasD;
 
-  return pwmD;
+  return piPwmD;
 }
 
 // ============================================================
@@ -377,13 +393,12 @@ int incrementalPI_D(int encoder, int target) {
 // ============================================================
 
 void resetPIController() {
-  // 清零PI控制器的内部状态
-  // 由于使用静态变量, 需要通过特殊方式重置
-  // 调用时传入target=0, encoder=0来重置
-  incrementalPI_A(0, 0);
-  incrementalPI_D(0, 0);
-  
-  // 直接设置PWM输出为0
+  piBiasA = 0;
+  piLastBiasA = 0;
+  piPwmA = 0;
+  piBiasD = 0;
+  piLastBiasD = 0;
+  piPwmD = 0;
   motorPwmA = 0;
   motorPwmD = 0;
 }
@@ -392,7 +407,7 @@ void resetPIController() {
 // 设置电机PWM和方向
 // 对应原项目 Set_Pwm()
 // pwmA > 0: 左电机(A口)正转, pwmA < 0: 左电机反转
-// pwmB > 0: 右电机(D口)正转, pwmB < 0: 右电机反转
+// pwmB > 0: 右电机(B口)正转, pwmB < 0: 右电机反转
 // ============================================================
 
 void setMotorPwm(int pwmA, int pwmB) {
@@ -412,26 +427,85 @@ void setMotorPwm(int pwmA, int pwmB) {
   }
   analogWrite(MOTOR_A_PWM, abs(pwmA));
 
-  // --- 电机D (右侧, 模块D口) ---
+  // --- 电机B (右侧, 模块B口) ---
   if (pwmB > 0) {
-    digitalWrite(MOTOR_D_IN1, LOW);
-    digitalWrite(MOTOR_D_IN2, HIGH);
+    digitalWrite(MOTOR_B_IN1, LOW);
+    digitalWrite(MOTOR_B_IN2, HIGH);
   } else if (pwmB < 0) {
-    digitalWrite(MOTOR_D_IN1, HIGH);
-    digitalWrite(MOTOR_D_IN2, LOW);
+    digitalWrite(MOTOR_B_IN1, HIGH);
+    digitalWrite(MOTOR_B_IN2, LOW);
   } else {
-    digitalWrite(MOTOR_D_IN1, LOW);
-    digitalWrite(MOTOR_D_IN2, LOW);
+    digitalWrite(MOTOR_B_IN1, LOW);
+    digitalWrite(MOTOR_B_IN2, LOW);
   }
-  analogWrite(MOTOR_D_PWM, abs(pwmB));
+  analogWrite(MOTOR_B_PWM, abs(pwmB));
 }
 
 // ============================================================
 // 运动控制函数
 // ============================================================
 
+int scalePercentToPwm(int percent, int maxPwm) {
+  return (int)((long)percent * maxPwm / 100L);
+}
+
+void setDirectPwmDrive(int leftPwm, int rightPwm) {
+  directPwmLeft = constrain(leftPwm, -REMOTE_PWM_MAX, REMOTE_PWM_MAX);
+  directPwmRight = constrain(rightPwm, -REMOTE_PWM_MAX, REMOTE_PWM_MAX);
+  motorPwmA = directPwmLeft;
+  motorPwmD = directPwmRight;
+  directPwmControl = true;
+  velocity = 0;
+  turn = 0;
+  flagStop = false;
+}
+
+void applyRemoteDrive(int velPercent, int turnPercent) {
+  int drivePercent = (abs(velPercent) <= REMOTE_INPUT_DEADZONE) ? 0 : velPercent;
+  int steerPercent = (abs(turnPercent) <= REMOTE_INPUT_DEADZONE) ? 0 : turnPercent;
+
+  if (drivePercent == 0 && steerPercent == 0) {
+    moveStop();
+    return;
+  }
+
+  int drivePwm = scalePercentToPwm(drivePercent, REMOTE_PWM_MAX);
+  int steerPwm = scalePercentToPwm(steerPercent, REMOTE_TURN_PWM_MAX);
+
+  int leftPwm = drivePwm + steerPwm;
+  int rightPwm = drivePwm - steerPwm;
+
+  if (drivePercent == 0 && steerPercent != 0) {
+    leftPwm = steerPwm;
+    rightPwm = -steerPwm;
+  }
+
+  int maxMagnitude = max(abs(leftPwm), abs(rightPwm));
+  if (maxMagnitude > REMOTE_PWM_MAX) {
+    leftPwm = (int)((long)leftPwm * REMOTE_PWM_MAX / maxMagnitude);
+    rightPwm = (int)((long)rightPwm * REMOTE_PWM_MAX / maxMagnitude);
+  }
+
+  setDirectPwmDrive(leftPwm, rightPwm);
+
+  static unsigned long lastRemotePrint = 0;
+  unsigned long now = millis();
+  if (now - lastRemotePrint > 200) {
+    Serial.print(F("[遥控混控] V="));
+    Serial.print(velPercent);
+    Serial.print(F(" T="));
+    Serial.print(turnPercent);
+    Serial.print(F(" -> L="));
+    Serial.print(directPwmLeft);
+    Serial.print(F(" R="));
+    Serial.println(directPwmRight);
+    lastRemotePrint = now;
+  }
+}
+
 // 前进
 void moveForward(int speedVal) {
+  directPwmControl = false;
   velocity = speedVal;
   turn     = 0;
   flagStop = false;
@@ -441,6 +515,7 @@ void moveForward(int speedVal) {
 
 // 后退
 void moveBackward(int speedVal) {
+  directPwmControl = false;
   velocity = -speedVal;
   turn     = 0;
   flagStop = false;
@@ -450,6 +525,7 @@ void moveBackward(int speedVal) {
 
 // 左转 (原地左转: 左轮后退, 右轮前进)
 void turnLeft(int speedVal) {
+  directPwmControl = false;
   velocity = 0;
   turn     = -speedVal;
   flagStop = false;
@@ -459,6 +535,7 @@ void turnLeft(int speedVal) {
 
 // 右转 (原地右转: 左轮前进, 右轮后退)
 void turnRight(int speedVal) {
+  directPwmControl = false;
   velocity = 0;
   turn     = speedVal;
   flagStop = false;
@@ -468,6 +545,7 @@ void turnRight(int speedVal) {
 
 // 左前转 (前进+左转)
 void moveForwardLeft(int speedVal, int turnVal) {
+  directPwmControl = false;
   velocity = speedVal;
   turn     = -turnVal;
   flagStop = false;
@@ -479,6 +557,7 @@ void moveForwardLeft(int speedVal, int turnVal) {
 
 // 右前转 (前进+右转)
 void moveForwardRight(int speedVal, int turnVal) {
+  directPwmControl = false;
   velocity = speedVal;
   turn     = turnVal;
   flagStop = false;
@@ -490,6 +569,9 @@ void moveForwardRight(int speedVal, int turnVal) {
 
 // 停止
 void moveStop() {
+  directPwmControl = false;
+  directPwmLeft = 0;
+  directPwmRight = 0;
   velocity = 0;
   turn     = 0;
   flagStop = true;
@@ -721,7 +803,7 @@ void handleSerialCommand() {
 // 示例: "$V50,T0,F0*\n"
 //   vel:   -100~100 (速度百分比, 左摇杆Y轴)
 //   turn:  -100~100 (转向百分比, 右摇杆X轴)
-//   flags: bit0=自动模式 (0=手动, 1=自动)
+//   flags: bit0=当前模式 (0=手动, 1=自动), bit1=模式切换请求
 
 void handleRemoteCommand() {
   while (remoteSerial.available()) {
@@ -749,15 +831,17 @@ void parseRemoteCommand(const char *cmd) {
 
   const char *p = cmd;
 
-  int vel = 0, turn = 0, flags = 0;
+  int velInput = 0;
+  int turnInput = 0;
+  int flags = 0;
 
   p += 2;
-  vel = atoi(p);
+  velInput = atoi(p);
 
   p = strstr(p, ",T");
   if (!p) return;
   p += 2;
-  turn = atoi(p);
+  turnInput = atoi(p);
 
   p = strstr(p, ",F");
   if (!p) return;
@@ -767,24 +851,26 @@ void parseRemoteCommand(const char *cmd) {
   lastRemoteCmdTime = millis();
   remoteConnected = true;
 
-  if (ctrlMode != CTRL_MODE_REMOTE) {
+  if (flags & FLAG_MODE_SWITCH_REQUEST) {
+    moveStop();
+    if (flags & FLAG_AUTO_MODE) {
+      ctrlMode = CTRL_MODE_DEMO;
+      demoMode = true;
+      Serial.println(F("[遥控] 用户触发: 切换到自动运行模式"));
+      return;
+    }
+
     ctrlMode = CTRL_MODE_REMOTE;
-    Serial.println(F("[遥控] 检测到遥控器, 自动切换到遥控模式"));
+    demoMode = false;
+    Serial.println(F("[遥控] 用户触发: 切换到手动遥控模式"));
   }
 
-  if (flags & 0x01) {
-    ctrlMode = CTRL_MODE_DEMO;
-    demoMode = true;
-    Serial.println(F("[遥控] 切换到自动运行模式"));
+  if (ctrlMode != CTRL_MODE_REMOTE) {
     return;
   }
 
   demoMode = false;
-
-  velocity = (float)map(vel, -100, 100, -REMOTE_SPEED_MAX, REMOTE_SPEED_MAX);
-  turn     = (float)map(turn, -100, 100, -REMOTE_SPEED_MAX, REMOTE_SPEED_MAX);
-
-  flagStop = false;
+  applyRemoteDrive(velInput, turnInput);
 }
 
 // ============================================================
@@ -864,7 +950,7 @@ void loop() {
   handleRemoteCommand();
 
   // 遥控器超时检测
-  if (ctrlMode == CTRL_MODE_REMOTE) {
+  if (remoteConnected) {
     checkRemoteTimeout();
   }
 

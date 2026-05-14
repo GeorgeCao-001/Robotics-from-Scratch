@@ -23,7 +23,7 @@
  *   示例: "$V50,T0,F0*\n"
  *   vel:   -100~100 (速度)
  *   turn:  -100~100 (转向)
- *   flags: bit0=自动模式
+ *   flags: bit0=当前模式, bit1=模式切换请求
  */
 
 #include <esp_now.h>
@@ -42,7 +42,7 @@
 // ESP-NOW 配置
 // ============================================================
 
-uint8_t REMOTE_MAC[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+uint8_t REMOTE_MAC[] = {0x9C, 0x13, 0x9E, 0xA9, 0xB7, 0x18};
 
 #define ESP_NOW_CHANNEL 1
 
@@ -118,7 +118,7 @@ uint8_t calcChecksum(const uint8_t *data, int len) {
 // ESP-NOW 接收回调
 // ============================================================
 
-void onRecv(const esp_now_recv_info *info, const uint8_t *data, int len) {
+void onRecv(const uint8_t *mac_addr, const uint8_t *data, int len) {
     if (len != sizeof(ControlPacket)) return;
 
     ControlPacket pkt;
@@ -154,7 +154,6 @@ void onSend(const uint8_t *macAddr, esp_now_send_status_t status) {
 
 bool initEspNow() {
     WiFi.mode(WIFI_STA);
-    WiFi.setChannel(ESP_NOW_CHANNEL);
 
     if (esp_now_init() != ESP_OK) {
         Serial.println("[ESP-NOW] 初始化失败!");
@@ -362,6 +361,16 @@ void loop() {
     if (now - lastStatusSend >= STATUS_SEND_INTERVAL) {
         sendStatusToRemote();
         lastStatusSend = now;
+    }
+
+    static unsigned long lastStatusPrint = 0;
+    if (now - lastStatusPrint >= 3000) {
+        Serial.println(F("========== 接收器状态 =========="));
+        Serial.printf("  遥控器在线: %s\n", remoteOnline ? "是" : "否");
+        Serial.printf("  电池电压: %.2fV\n", batteryVoltage);
+        Serial.printf("  编码器L: %d, R: %d\n", arduinoEncL, arduinoEncR);
+        Serial.println(F("================================"));
+        lastStatusPrint = now;
     }
 
     updateStatusLed();
