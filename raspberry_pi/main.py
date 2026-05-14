@@ -27,6 +27,9 @@ class RuntimeConfig:
     control_hz: float = 10.0
     detection_stale_s: float = 0.2
     status_interval_s: float = 0.0
+    debug_vision: bool = False
+    debug_control: bool = False
+    debug_gimbal: bool = False
 
 
 class SharedVisionState:
@@ -126,6 +129,7 @@ def _run_control_loop(
     period_s = 1.0 / runtime.control_hz
     last_t = now_fn()
     last_status_t = last_t
+    last_debug_t = last_t
 
     while vision_alive():
         loop_start_t = now_fn()
@@ -141,6 +145,17 @@ def _run_control_loop(
 
         target = shared.get(now_t, runtime.detection_stale_s)
         move_cmd, gimbal = planner.update(target, dt_s)
+        if runtime.debug_control and now_t - last_debug_t >= 0.5:
+            last_debug_t = now_t
+            target_state = "yes" if target is not None else "no"
+            print(
+                "[CONTROL] "
+                f"target={target_state} "
+                f"move(v={move_cmd['v']:.3f},w={move_cmd['w']:.3f}) "
+                f"gimbal(pan_delta={gimbal.pan_delta:.3f},"
+                f"tilt_abs={gimbal.tilt_abs:.3f},"
+                f"pan_abs={gimbal.pan_abs:.3f})"
+            )
         try:
             comm.send_message(move_cmd)
         except Exception as exc:
@@ -185,6 +200,7 @@ def run(runtime: RuntimeConfig) -> None:
         GimbalConfig(
             pan_pin=planning_config.gimbal_pan_pin,
             tilt_pin=planning_config.gimbal_tilt_pin,
+            debug=runtime.debug_gimbal,
         )
     )
     stop_event = threading.Event()
@@ -194,7 +210,18 @@ def run(runtime: RuntimeConfig) -> None:
             raise RuntimeError("control loop stopped")
         target = _to_vision_target(pose_info)
         if target is None:
+            if runtime.debug_vision:
+                print(f"[MAIN] rejected pose_info keys={sorted(pose_info.keys())}")
             return
+        if runtime.debug_vision:
+            print(
+                "[MAIN] target accepted "
+                f"x_error={target.x_error_norm:.3f} "
+                f"y_error={target.y_error_norm:.3f} "
+                f"height={target.height_norm:.3f} "
+                f"width={target.width_norm:.3f} "
+                f"conf={target.confidence:.3f}"
+            )
         shared.update(target, time.monotonic())
 
     def control_worker() -> None:
@@ -233,6 +260,7 @@ def run(runtime: RuntimeConfig) -> None:
             "frame_height": runtime.frame_height,
             "camera_fps": runtime.camera_fps,
             "num_poses": runtime.num_poses,
+            "debug_vision": runtime.debug_vision,
         }
         if runtime.camera_backend == "rpicam":
             run_pose_landmarker_on_rpicam(
@@ -307,6 +335,21 @@ def _parse_args() -> RuntimeConfig:
         default=0.0,
         help="Optional status polling period; <=0 disables",
     )
+    parser.add_argument(
+        "--debug-vision",
+        action="store_true",
+        help="Print camera frame and pose detection diagnostics",
+    )
+    parser.add_argument(
+        "--debug-control",
+        action="store_true",
+        help="Print control loop diagnostics",
+    )
+    parser.add_argument(
+        "--debug-gimbal",
+        action="store_true",
+        help="Print GPIO gimbal PWM diagnostics",
+    )
     args = parser.parse_args()
     return RuntimeConfig(
         port=args.port,
@@ -321,6 +364,9 @@ def _parse_args() -> RuntimeConfig:
         control_hz=args.control_hz,
         detection_stale_s=args.detection_stale_s,
         status_interval_s=args.status_interval_s,
+        debug_vision=args.debug_vision,
+        debug_control=args.debug_control,
+        debug_gimbal=args.debug_gimbal,
     )
 
 

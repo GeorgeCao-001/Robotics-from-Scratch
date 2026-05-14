@@ -247,6 +247,8 @@ def _process_pose_frame(
     last_timestamp_ms,
     on_detected,
     show_window,
+    debug_vision=False,
+    debug_state=None,
 ):
     rgb_frame = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
@@ -257,6 +259,7 @@ def _process_pose_frame(
 
     result = landmarker.detect_for_video(mp_image, timestamp_ms)
 
+    pose_info = None
     if result.pose_landmarks:
         h, w = frame_bgr.shape[:2]
         selected_pose, pose_info = select_largest_person(
@@ -270,6 +273,36 @@ def _process_pose_frame(
             annotated = draw_pose_landmarks(frame_bgr, result.pose_landmarks)
     else:
         annotated = frame_bgr
+
+    if debug_vision and debug_state is not None:
+        now_s = time.monotonic()
+        debug_state["frames"] += 1
+        if pose_info:
+            debug_state["detections"] += 1
+            if now_s - debug_state["last_pose_log_s"] >= 0.5:
+                debug_state["last_pose_log_s"] = now_s
+                print(
+                    "[VISION] pose "
+                    f"x_error={pose_info['x_error_norm']:.3f} "
+                    f"y_error={pose_info['y_error_norm']:.3f} "
+                    f"height={pose_info['height_norm']:.3f} "
+                    f"width={pose_info['width_norm']:.3f} "
+                    f"conf={pose_info['confidence']:.3f}"
+                )
+
+        if now_s - debug_state["last_stats_log_s"] >= 1.0:
+            elapsed_s = max(1e-6, now_s - debug_state["stats_start_s"])
+            fps = debug_state["frames"] / elapsed_s
+            print(
+                "[VISION] stats "
+                f"frames={debug_state['frames']} "
+                f"fps={fps:.1f} "
+                f"detections={debug_state['detections']}"
+            )
+            debug_state["frames"] = 0
+            debug_state["detections"] = 0
+            debug_state["stats_start_s"] = now_s
+            debug_state["last_stats_log_s"] = now_s
 
     should_quit = False
     if show_window:
@@ -288,6 +321,7 @@ def run_pose_landmarker_on_camera(
     frame_height: int = 480,
     camera_fps: int = 15,
     num_poses: int = 1,
+    debug_vision: bool = False,
 ):
     options = _create_pose_landmarker_options(num_poses=num_poses)
 
@@ -298,9 +332,25 @@ def run_pose_landmarker_on_camera(
     if not cap.isOpened():
         print(f"Cannot open camera {camera_id}")
         return
+    if debug_vision:
+        actual_width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+        actual_height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        actual_fps = cap.get(cv2.CAP_PROP_FPS)
+        print(
+            "[VISION] camera opened "
+            f"backend=opencv id={camera_id} "
+            f"width={actual_width:.0f} height={actual_height:.0f} fps={actual_fps:.1f}"
+        )
 
     start_monotonic = time.monotonic()
     last_timestamp_ms = 0
+    debug_state = {
+        "frames": 0,
+        "detections": 0,
+        "stats_start_s": start_monotonic,
+        "last_stats_log_s": start_monotonic,
+        "last_pose_log_s": 0.0,
+    }
     with vision.PoseLandmarker.create_from_options(options) as landmarker:
         while True:
             ret, frame = cap.read()
@@ -310,7 +360,7 @@ def run_pose_landmarker_on_camera(
 
             last_timestamp_ms, _annotated, should_quit = _process_pose_frame(
                 frame, landmarker, start_monotonic, last_timestamp_ms,
-                on_detected, show_window,
+                on_detected, show_window, debug_vision, debug_state,
             )
             if should_quit:
                 break
@@ -328,6 +378,7 @@ def run_pose_landmarker_on_rpicam(
     frame_height: int = 480,
     camera_fps: int = 15,
     num_poses: int = 1,
+    debug_vision: bool = False,
 ):
     options = _create_pose_landmarker_options(num_poses=num_poses)
 
@@ -343,6 +394,12 @@ def run_pose_landmarker_on_rpicam(
         "--verbose", "0",
         "-o", "-",
     ]
+    if debug_vision:
+        print(
+            "[VISION] camera opening "
+            f"backend=rpicam id={camera_id} "
+            f"width={frame_width} height={frame_height} fps={camera_fps}"
+        )
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -366,6 +423,13 @@ def run_pose_landmarker_on_rpicam(
     start_monotonic = time.monotonic()
     last_timestamp_ms = 0
     last_frame_time = start_monotonic
+    debug_state = {
+        "frames": 0,
+        "detections": 0,
+        "stats_start_s": start_monotonic,
+        "last_stats_log_s": start_monotonic,
+        "last_pose_log_s": 0.0,
+    }
     frame_timeout_s = max(5.0, 3.0 / max(camera_fps, 1))
     max_buffer_bytes = max(frame_width * frame_height * 4, 10 * 1024 * 1024)
 
@@ -431,6 +495,8 @@ def run_pose_landmarker_on_rpicam(
                             last_timestamp_ms,
                             on_detected,
                             show_window,
+                            debug_vision,
+                            debug_state,
                         )
                     )
                     if should_quit:

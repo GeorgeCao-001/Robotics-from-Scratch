@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import Any
 
 
@@ -12,6 +13,7 @@ class GimbalConfig:
     pan_stop_angle: float = 90.0
     pan_max_speed_offset: float = 45.0
     pan_full_speed_delta: float = 180.0
+    debug: bool = False
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -29,6 +31,7 @@ class GimbalHardware:
         self._pan_pwm: Any = None
         self._tilt_pwm: Any = None
         self._setup_done = False
+        self._last_debug_log_s = 0.0
 
     def setup(self) -> None:
         if self._setup_done:
@@ -60,9 +63,26 @@ class GimbalHardware:
                 180.0,
             )
             self._pan_pwm.ChangeDutyCycle(self._angle_to_duty(servo_pan))
+        else:
+            speed = 0.0
+            servo_pan = self._cfg.pan_stop_angle
         if self._tilt_pwm is not None:
             servo_tilt = _clamp(tilt_angle, 0.0, 180.0)
             self._tilt_pwm.ChangeDutyCycle(self._angle_to_duty(servo_tilt))
+        else:
+            servo_tilt = _clamp(tilt_angle, 0.0, 180.0)
+
+        if self._cfg.debug:
+            now_s = time.monotonic()
+            if now_s - self._last_debug_log_s >= 0.5:
+                self._last_debug_log_s = now_s
+                print(
+                    "[GIMBAL] "
+                    f"pan_delta={pan_delta:.3f} "
+                    f"speed={speed:.3f} "
+                    f"servo_pan={servo_pan:.1f} "
+                    f"tilt={servo_tilt:.1f}"
+                )
 
     def cleanup(self) -> None:
         if self._pan_pwm is not None:
