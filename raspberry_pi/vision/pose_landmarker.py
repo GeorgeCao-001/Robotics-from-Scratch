@@ -404,9 +404,11 @@ def run_pose_landmarker_on_rpicam(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        bufsize=0,
     )
     if proc.stdout is None:
         raise RuntimeError("failed to open rpicam-vid stdout")
+    stdout_fd = proc.stdout.fileno()
 
     stderr_lines = []
 
@@ -430,6 +432,16 @@ def run_pose_landmarker_on_rpicam(
         "last_stats_log_s": start_monotonic,
         "last_pose_log_s": 0.0,
     }
+    stream_debug = {
+        "bytes": 0,
+        "chunks": 0,
+        "soi": 0,
+        "eoi": 0,
+        "decoded": 0,
+        "decode_failed": 0,
+        "last_log_s": start_monotonic,
+        "first_frame_logged": False,
+    }
     frame_timeout_s = max(5.0, 3.0 / max(camera_fps, 1))
     max_buffer_bytes = max(frame_width * frame_height * 4, 10 * 1024 * 1024)
 
@@ -444,6 +456,30 @@ def run_pose_landmarker_on_rpicam(
 
                 readable, _, _ = select.select([proc.stdout], [], [], 0.2)
                 if not readable:
+                    if debug_vision:
+                        now_s = time.monotonic()
+                        if now_s - stream_debug["last_log_s"] >= 1.0:
+                            print(
+                                "[VISION] rpicam stream "
+                                f"bytes={stream_debug['bytes']} "
+                                f"chunks={stream_debug['chunks']} "
+                                f"buffer={len(buf)} "
+                                f"soi={stream_debug['soi']} "
+                                f"eoi={stream_debug['eoi']} "
+                                f"decoded={stream_debug['decoded']} "
+                                f"decode_failed={stream_debug['decode_failed']}"
+                            )
+                            stream_debug.update(
+                                {
+                                    "bytes": 0,
+                                    "chunks": 0,
+                                    "soi": 0,
+                                    "eoi": 0,
+                                    "decoded": 0,
+                                    "decode_failed": 0,
+                                    "last_log_s": now_s,
+                                }
+                            )
                     if time.monotonic() - last_frame_time > frame_timeout_s:
                         details = "\n".join(stderr_lines[-10:])
                         raise RuntimeError(
@@ -452,13 +488,18 @@ def run_pose_landmarker_on_rpicam(
                         )
                     continue
 
-                chunk = proc.stdout.read(4096)
+                chunk = os.read(stdout_fd, 4096)
                 if not chunk:
                     details = "\n".join(stderr_lines[-10:])
                     raise RuntimeError(
                         "rpicam-vid ended before a complete frame was received"
                         + (f": {details}" if details else "")
                     )
+                if debug_vision:
+                    stream_debug["bytes"] += len(chunk)
+                    stream_debug["chunks"] += 1
+                    stream_debug["soi"] += chunk.count(b"\xff\xd8")
+                    stream_debug["eoi"] += chunk.count(b"\xff\xd9")
                 buf.extend(chunk)
                 if len(buf) > max_buffer_bytes:
                     details = "\n".join(stderr_lines[-10:])
@@ -484,8 +525,44 @@ def run_pose_landmarker_on_rpicam(
                         np.frombuffer(jpeg_bytes, np.uint8), cv2.IMREAD_COLOR
                     )
                     if frame is None:
+                        if debug_vision:
+                            stream_debug["decode_failed"] += 1
                         continue
+                    if debug_vision:
+                        stream_debug["decoded"] += 1
+                        if not stream_debug["first_frame_logged"]:
+                            stream_debug["first_frame_logged"] = True
+                            h, w = frame.shape[:2]
+                            print(
+                                "[VISION] rpicam first frame decoded "
+                                f"width={w} height={h}"
+                            )
                     last_frame_time = time.monotonic()
+
+                    if debug_vision:
+                        now_s = time.monotonic()
+                        if now_s - stream_debug["last_log_s"] >= 1.0:
+                            print(
+                                "[VISION] rpicam stream "
+                                f"bytes={stream_debug['bytes']} "
+                                f"chunks={stream_debug['chunks']} "
+                                f"buffer={len(buf)} "
+                                f"soi={stream_debug['soi']} "
+                                f"eoi={stream_debug['eoi']} "
+                                f"decoded={stream_debug['decoded']} "
+                                f"decode_failed={stream_debug['decode_failed']}"
+                            )
+                            stream_debug.update(
+                                {
+                                    "bytes": 0,
+                                    "chunks": 0,
+                                    "soi": 0,
+                                    "eoi": 0,
+                                    "decoded": 0,
+                                    "decode_failed": 0,
+                                    "last_log_s": now_s,
+                                }
+                            )
 
                     last_timestamp_ms, _annotated, should_quit = (
                         _process_pose_frame(
