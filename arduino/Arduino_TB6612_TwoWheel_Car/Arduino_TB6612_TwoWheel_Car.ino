@@ -6,7 +6,7 @@
  * 硬件平台: Arduino UNO (ATmega328P, 16MHz)
  * 驱动模块: TB6612FNG 双路H桥电机驱动 (A口+B口)
  * 电机类型: MG513XP28_12V (WHEELTEC带霍尔编码器直流减速电机)
- * 电机接口: 5线集成接口 (电机电源×2 + 编码器×3)
+ * 电机接口: 6线集成接口 (电机电源×2 + 编码器×4)
  * 电机连接: 左电机→A口, 右电机→B口
  * 供电方式: 12V锂电池组 (3S, 标称11.1V~12.6V)
  * 小车结构: 三轮结构 (两驱动轮 + 前部万向轮)
@@ -18,20 +18,20 @@
  */
 
 // ============================================================
-// 引脚定义 - WHEELTEC 四路TB6612 电机驱动模块
+// 引脚定义 - TB6612 双路电机驱动模块 (A口+B口)
 // ============================================================
-// 模块集成两颗TB6612FNG芯片:
-//   Chip1: 控制A口(左电机) + B口(未使用)
-//   Chip2: 控制C口(未使用) + D口(右电机)
+// 模块集成一颗TB6612FNG芯片, 提供2个独立电机端口:
+//   A口: 控制左电机
+//   B口: 控制右电机
 //
 // 每个端口有3个控制引脚: PWM + IN1 + IN2
 
-// 左电机 → 模块A口 (TB6612 Chip1)
+// 左电机 → 模块A口
 #define MOTOR_A_PWM   9     // PWMA - PWM调速
 #define MOTOR_A_IN1   7     // AIN1 - 方向控制1
 #define MOTOR_A_IN2   6     // AIN2 - 方向控制2
 
-// 右电机 → 模块B口 (TB6612 单芯片, A口控制左电机, B口控制右电机)
+// 右电机 → 模块B口
 #define MOTOR_B_PWM   10    // PWMB - PWM调速
 #define MOTOR_B_IN1   8     // BIN1 - 方向控制1
 #define MOTOR_B_IN2   12    // BIN2 - 方向控制2
@@ -45,9 +45,11 @@
 
 // 左电机编码器 (使用外部中断 INT0)
 #define ENCODER_LEFT_A   2   // 编码器A相脉冲 (INT0)
+#define ENCODER_LEFT_B   A4  // 编码器B相方向 (A4)
 
 // 右电机编码器 (使用外部中断 INT1)
 #define ENCODER_RIGHT_A  3   // 编码器A相脉冲 (INT1)
+#define ENCODER_RIGHT_B  A5  // 编码器B相方向 (A5)
 
 // ============================================================
 // 引脚定义 - ESP32-C3 通信 (SoftwareSerial)
@@ -81,9 +83,9 @@
 // MG513XP28_12V 电机参数配置
 // ============================================================
 // 编码器参数 (MG513XP28_12V典型值)
-// 霍尔编码器: 11线 × 4倍频 = 44脉冲/电机轴圈
-// 减速比1:28/1:30时, 输出轴每圈脉冲数 = 44 × 减速比
-#define ENCODER_PPR     44      // 编码器每圈脉冲数 (电机轴, 4倍频后)
+// 霍尔编码器: 11线, A相上升沿计数 = 11脉冲/电机轴圈
+// 减速比1:28/1:30时, 输出轴每圈脉冲数 = 11 × 减速比
+#define ENCODER_PPR     11      // 编码器每圈脉冲数 (电机轴, A相上升沿)
 #define GEAR_RATIO      28      // 减速比 (根据实际型号调整: 10/20/28/30/60)
 
 // PID控制参数 (MG513XP28电机优化值)
@@ -131,7 +133,7 @@ int encoderRight = 0;
 
 // 目标速度 (编码器脉冲/控制周期)
 int targetSpeedA = 0;
-int targetSpeedD = 0;
+int targetSpeedB = 0;
 
 // 运动控制变量
 float velocity = 0;     // 线速度
@@ -139,7 +141,7 @@ float turn     = 0;     // 转向角速度(差速值)
 
 // 电机PWM输出值
 int motorPwmA = 0;
-int motorPwmD = 0;
+int motorPwmB = 0;
 
 // 系统状态标志
 bool flagStop    = true;    // 停止标志 (默认停止状态)
@@ -181,9 +183,9 @@ int directPwmRight = 0;
 int piBiasA = 0;
 int piLastBiasA = 0;
 int piPwmA = 0;
-int piBiasD = 0;
-int piLastBiasD = 0;
-int piPwmD = 0;
+int piBiasB = 0;
+int piLastBiasB = 0;
+int piPwmB = 0;
 
 // ============================================================
 // 初始化函数
@@ -232,7 +234,9 @@ void setup() {
 
   // --- 编码器中断初始化 ---
   pinMode(ENCODER_LEFT_A,  INPUT_PULLUP);
+  pinMode(ENCODER_LEFT_B,  INPUT_PULLUP);
   pinMode(ENCODER_RIGHT_A, INPUT_PULLUP);
+  pinMode(ENCODER_RIGHT_B, INPUT_PULLUP);
 
   // 绑定外部中断 (RISING沿触发)
   attachInterrupt(digitalPinToInterrupt(ENCODER_LEFT_A),
@@ -296,13 +300,23 @@ void initTimer2() {
 // ============================================================
 
 // 左电机编码器中断 (INT0, Pin 2)
+// A相上升沿时读取B相: B=LOW→正转(+1), B=HIGH→反转(-1)
 void encoderLeftISR() {
-  encoderLeftCount++;
+  if (digitalRead(ENCODER_LEFT_B) == LOW) {
+    encoderLeftCount++;
+  } else {
+    encoderLeftCount--;
+  }
 }
 
 // 右电机编码器中断 (INT1, Pin 3)
+// A相上升沿时读取B相: B=LOW→正转(+1), B=HIGH→反转(-1)
 void encoderRightISR() {
-  encoderRightCount++;
+  if (digitalRead(ENCODER_RIGHT_B) == LOW) {
+    encoderRightCount++;
+  } else {
+    encoderRightCount--;
+  }
 }
 
 // ============================================================
@@ -322,9 +336,9 @@ ISR(TIMER2_COMPA_vect) {
 
   // --- 运动学分析 ---
   // 对应原项目 Kinematic_Analysis()
-  // Diff_Car模式: Target_A = velocity + turn, Target_D = velocity - turn
+  // Diff_Car模式: Target_A = velocity + turn, Target_B = velocity - turn
   targetSpeedA = (int)(velocity + turn);
-  targetSpeedD = (int)(velocity - turn);
+  targetSpeedB = (int)(velocity - turn);
 
   // --- 速度PI闭环控制 ---
   // 对应原项目 Incremental_PI_A / Incremental_PI_B
@@ -335,16 +349,16 @@ ISR(TIMER2_COMPA_vect) {
     }
 
     motorPwmA = incrementalPI_A(encoderLeft,  targetSpeedA);
-    motorPwmD = incrementalPI_D(encoderRight, targetSpeedD);
+    motorPwmB = incrementalPI_B(encoderRight, targetSpeedB);
 
     // PWM限幅
     // 对应原项目 Xianfu_Pwm()
     motorPwmA = constrain(motorPwmA, -PWM_LIMIT, PWM_LIMIT);
-    motorPwmD = constrain(motorPwmD, -PWM_LIMIT, PWM_LIMIT);
+    motorPwmB = constrain(motorPwmB, -PWM_LIMIT, PWM_LIMIT);
 
     // 设置电机PWM
     // 对应原项目 Set_Pwm()
-    setMotorPwm(motorPwmA, motorPwmD);
+    setMotorPwm(motorPwmA, motorPwmB);
   } else {
     // 停止状态: 清零PI积分并停止电机
     resetPIController();
@@ -373,19 +387,19 @@ int incrementalPI_A(int encoder, int target) {
   return piPwmA;
 }
 
-int incrementalPI_D(int encoder, int target) {
-  piBiasD = encoder - target;
+int incrementalPI_B(int encoder, int target) {
+  piBiasB = encoder - target;
   
   // 增量式PI计算
-  piPwmD += (int)(VELOCITY_KP * (piBiasD - piLastBiasD) + VELOCITY_KI * piBiasD);
+  piPwmB += (int)(VELOCITY_KP * (piBiasB - piLastBiasB) + VELOCITY_KI * piBiasB);
   
   // 输出限幅 (防止积分饱和)
-  if (piPwmD > PID_OUTPUT_MAX) piPwmD = PID_OUTPUT_MAX;
-  if (piPwmD < PID_OUTPUT_MIN) piPwmD = PID_OUTPUT_MIN;
+  if (piPwmB > PID_OUTPUT_MAX) piPwmB = PID_OUTPUT_MAX;
+  if (piPwmB < PID_OUTPUT_MIN) piPwmB = PID_OUTPUT_MIN;
   
-  piLastBiasD = piBiasD;
+  piLastBiasB = piBiasB;
 
-  return piPwmD;
+  return piPwmB;
 }
 
 // ============================================================
@@ -396,11 +410,11 @@ void resetPIController() {
   piBiasA = 0;
   piLastBiasA = 0;
   piPwmA = 0;
-  piBiasD = 0;
-  piLastBiasD = 0;
-  piPwmD = 0;
+  piBiasB = 0;
+  piLastBiasB = 0;
+  piPwmB = 0;
   motorPwmA = 0;
-  motorPwmD = 0;
+  motorPwmB = 0;
 }
 
 // ============================================================
@@ -453,7 +467,7 @@ void setDirectPwmDrive(int leftPwm, int rightPwm) {
   directPwmLeft = constrain(leftPwm, -REMOTE_PWM_MAX, REMOTE_PWM_MAX);
   directPwmRight = constrain(rightPwm, -REMOTE_PWM_MAX, REMOTE_PWM_MAX);
   motorPwmA = directPwmLeft;
-  motorPwmD = directPwmRight;
+  motorPwmB = directPwmRight;
   directPwmControl = true;
   velocity = 0;
   turn = 0;
@@ -899,7 +913,7 @@ void sendEncoderFeedback() {
   remoteSerial.print(F(","));
   remoteSerial.print(motorPwmA);
   remoteSerial.print(F(","));
-  remoteSerial.print(motorPwmD);
+  remoteSerial.print(motorPwmB);
   remoteSerial.println(F(","));
 }
 
@@ -922,16 +936,16 @@ void printStatus() {
   Serial.println();
   Serial.print(F("目标速度A: "));
   Serial.print(targetSpeedA);
-  Serial.print(F("  目标速度D: "));
-  Serial.println(targetSpeedD);
+  Serial.print(F("  目标速度B: "));
+  Serial.println(targetSpeedB);
   Serial.print(F("编码器A: "));
   Serial.print(encoderLeft);
-  Serial.print(F("  编码器D: "));
+  Serial.print(F("  编码器B: "));
   Serial.println(encoderRight);
   Serial.print(F("PWM输出A: "));
   Serial.print(motorPwmA);
-  Serial.print(F("  PWM输出D: "));
-  Serial.println(motorPwmD);
+  Serial.print(F("  PWM输出B: "));
+  Serial.println(motorPwmB);
   Serial.print(F("电池电压: "));
   Serial.print(batteryVoltage);
   Serial.println(F("V"));
@@ -977,8 +991,8 @@ void loop() {
       Serial.print(encoderRight);
       Serial.print(F(" PWM_A="));
       Serial.print(motorPwmA);
-      Serial.print(F(" PWM_D="));
-      Serial.println(motorPwmD);
+      Serial.print(F(" PWM_B="));
+      Serial.println(motorPwmB);
     }
   }
 }
