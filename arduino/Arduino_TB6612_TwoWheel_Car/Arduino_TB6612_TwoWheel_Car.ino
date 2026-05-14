@@ -6,7 +6,7 @@
  * 硬件平台: Arduino UNO (ATmega328P, 16MHz)
  * 驱动模块: TB6612FNG 双路H桥电机驱动 (A口+B口)
  * 电机类型: MG513XP28_12V (WHEELTEC带霍尔编码器直流减速电机)
- * 电机接口: 5线集成接口 (电机电源×2 + 编码器×3)
+ * 电机接口: 6线集成接口 (电机电源×2 + 编码器×4)
  * 电机连接: 左电机→A口, 右电机→B口
  * 供电方式: 12V锂电池组 (3S, 标称11.1V~12.6V)
  * 小车结构: 三轮结构 (两驱动轮 + 前部万向轮)
@@ -45,9 +45,11 @@
 
 // 左电机编码器 (使用外部中断 INT0)
 #define ENCODER_LEFT_A   2   // 编码器A相脉冲 (INT0)
+#define ENCODER_LEFT_B   A4  // 编码器B相方向 (A4)
 
 // 右电机编码器 (使用外部中断 INT1)
 #define ENCODER_RIGHT_A  3   // 编码器A相脉冲 (INT1)
+#define ENCODER_RIGHT_B  A5  // 编码器B相方向 (A5)
 
 // ============================================================
 // 引脚定义 - ESP32-C3 通信 (SoftwareSerial)
@@ -81,9 +83,9 @@
 // MG513XP28_12V 电机参数配置
 // ============================================================
 // 编码器参数 (MG513XP28_12V典型值)
-// 霍尔编码器: 11线 × 4倍频 = 44脉冲/电机轴圈
-// 减速比1:28/1:30时, 输出轴每圈脉冲数 = 44 × 减速比
-#define ENCODER_PPR     44      // 编码器每圈脉冲数 (电机轴, 4倍频后)
+// 霍尔编码器: 11线, A相上升沿计数 = 11脉冲/电机轴圈
+// 减速比1:28/1:30时, 输出轴每圈脉冲数 = 11 × 减速比
+#define ENCODER_PPR     11      // 编码器每圈脉冲数 (电机轴, A相上升沿)
 #define GEAR_RATIO      28      // 减速比 (根据实际型号调整: 10/20/28/30/60)
 
 // PID控制参数 (MG513XP28电机优化值)
@@ -232,7 +234,9 @@ void setup() {
 
   // --- 编码器中断初始化 ---
   pinMode(ENCODER_LEFT_A,  INPUT_PULLUP);
+  pinMode(ENCODER_LEFT_B,  INPUT_PULLUP);
   pinMode(ENCODER_RIGHT_A, INPUT_PULLUP);
+  pinMode(ENCODER_RIGHT_B, INPUT_PULLUP);
 
   // 绑定外部中断 (RISING沿触发)
   attachInterrupt(digitalPinToInterrupt(ENCODER_LEFT_A),
@@ -296,13 +300,23 @@ void initTimer2() {
 // ============================================================
 
 // 左电机编码器中断 (INT0, Pin 2)
+// A相上升沿时读取B相: B=LOW→正转(+1), B=HIGH→反转(-1)
 void encoderLeftISR() {
-  encoderLeftCount++;
+  if (digitalRead(ENCODER_LEFT_B) == LOW) {
+    encoderLeftCount++;
+  } else {
+    encoderLeftCount--;
+  }
 }
 
 // 右电机编码器中断 (INT1, Pin 3)
+// A相上升沿时读取B相: B=LOW→正转(+1), B=HIGH→反转(-1)
 void encoderRightISR() {
-  encoderRightCount++;
+  if (digitalRead(ENCODER_RIGHT_B) == LOW) {
+    encoderRightCount++;
+  } else {
+    encoderRightCount--;
+  }
 }
 
 // ============================================================
