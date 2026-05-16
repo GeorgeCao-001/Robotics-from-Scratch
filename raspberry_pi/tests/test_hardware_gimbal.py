@@ -79,7 +79,7 @@ class TestGimbalHardware(unittest.TestCase):
             GimbalConfig(pan_pin=17, tilt_pin=27),
             gpio_module=self.fake_gpio,
         )
-        hw.write(45.0, 135.0)
+        hw.write(45.0, -45.0)
 
         pan_duties = self.fake_gpio._pwms[17]._duty_cycles
         tilt_duties = self.fake_gpio._pwms[27]._duty_cycles
@@ -87,32 +87,79 @@ class TestGimbalHardware(unittest.TestCase):
         self.assertGreater(len(pan_duties), 1)
         self.assertGreater(len(tilt_duties), 1)
 
-    def test_angle_to_duty_maps_extremes(self):
-        self.assertAlmostEqual(GimbalHardware._angle_to_duty(0.0), 2.5)
-        self.assertAlmostEqual(GimbalHardware._angle_to_duty(90.0), 7.5)
-        self.assertAlmostEqual(GimbalHardware._angle_to_duty(180.0), 12.5)
+    def test_angle_to_duty_maps_range(self):
+        self.assertAlmostEqual(
+            GimbalHardware._angle_to_duty(-135.0, -135.0, 135.0), 2.5
+        )
+        self.assertAlmostEqual(
+            GimbalHardware._angle_to_duty(0.0, -135.0, 135.0), 7.5
+        )
+        self.assertAlmostEqual(
+            GimbalHardware._angle_to_duty(135.0, -135.0, 135.0), 12.5
+        )
 
-    def test_pan_delta_maps_to_continuous_servo_speed(self):
+    def test_angle_to_duty_maps_tilt_range(self):
+        self.assertAlmostEqual(
+            GimbalHardware._angle_to_duty(-90.0, -90.0, 90.0), 2.5
+        )
+        self.assertAlmostEqual(
+            GimbalHardware._angle_to_duty(0.0, -90.0, 90.0), 7.5
+        )
+        self.assertAlmostEqual(
+            GimbalHardware._angle_to_duty(90.0, -90.0, 90.0), 12.5
+        )
+
+    def test_pan_abs_maps_to_position_servo_duty(self):
         hw = GimbalHardware(
             GimbalConfig(pan_pin=17, tilt_pin=27),
             gpio_module=self.fake_gpio,
         )
-        hw.write(-180.0, 90.0)
+
+        hw.write(-135.0, 0.0)
         pan_duties = self.fake_gpio._pwms[17]._duty_cycles
-        pan_setup_duty = pan_duties[0]
-        pan_write_duty = pan_duties[1]
-        self.assertAlmostEqual(pan_setup_duty, 7.5, places=3)
-        self.assertAlmostEqual(pan_write_duty, 5.0, places=3)
+        self.assertAlmostEqual(pan_duties[0], 7.5, places=3)
+        self.assertAlmostEqual(pan_duties[1], 2.5, places=3)
+
+        hw.write(0.0, 0.0)
+        pan_duties_1 = self.fake_gpio._pwms[17]._duty_cycles
+        self.assertAlmostEqual(pan_duties_1[2], 7.5, places=3)
+
+        hw.write(135.0, 0.0)
+        pan_duties_2 = self.fake_gpio._pwms[17]._duty_cycles
+        self.assertAlmostEqual(pan_duties_2[3], 12.5, places=3)
+
+    def test_tilt_abs_maps_to_position_servo_duty(self):
+        hw = GimbalHardware(
+            GimbalConfig(pan_pin=17, tilt_pin=27),
+            gpio_module=self.fake_gpio,
+        )
+
+        hw.write(0.0, -90.0)
+        tilt_duties = self.fake_gpio._pwms[27]._duty_cycles
+        self.assertAlmostEqual(tilt_duties[0], 7.5, places=3)
+        self.assertAlmostEqual(tilt_duties[1], 2.5, places=3)
 
         hw.write(0.0, 90.0)
-        pan_duties_1 = self.fake_gpio._pwms[17]._duty_cycles
-        pan_write_duty_1 = pan_duties_1[2]
-        self.assertAlmostEqual(pan_write_duty_1, 7.5, places=3)
+        tilt_duties = self.fake_gpio._pwms[27]._duty_cycles
+        self.assertAlmostEqual(tilt_duties[2], 12.5, places=3)
 
-        hw.write(180.0, 90.0)
+    def test_clamp_at_boundaries(self):
+        hw = GimbalHardware(
+            GimbalConfig(pan_pin=17, tilt_pin=27),
+            gpio_module=self.fake_gpio,
+        )
+
+        hw.write(200.0, 200.0)
+        pan_duties = self.fake_gpio._pwms[17]._duty_cycles
+        tilt_duties = self.fake_gpio._pwms[27]._duty_cycles
+        self.assertAlmostEqual(pan_duties[1], 12.5, places=3)
+        self.assertAlmostEqual(tilt_duties[1], 12.5, places=3)
+
+        hw.write(-200.0, -200.0)
         pan_duties_2 = self.fake_gpio._pwms[17]._duty_cycles
-        pan_write_duty_2 = pan_duties_2[3]
-        self.assertAlmostEqual(pan_write_duty_2, 10.0, places=3)
+        tilt_duties_2 = self.fake_gpio._pwms[27]._duty_cycles
+        self.assertAlmostEqual(pan_duties_2[2], 2.5, places=3)
+        self.assertAlmostEqual(tilt_duties_2[2], 2.5, places=3)
 
     def test_cleanup_stops_pwm_and_cleans_gpio(self):
         hw = GimbalHardware(

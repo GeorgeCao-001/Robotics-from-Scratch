@@ -19,7 +19,7 @@ class _FakePlanner:
         return (
             {"cmd": "move", "v": 0.1, "w": 0.0},
             GimbalOutput(
-                pan_delta=1.0, tilt_delta=0.5, pan_abs=10.0, tilt_abs=95.0
+                pan_delta=1.0, tilt_delta=0.5, pan_abs=10.0, tilt_abs=45.0
             ),
         )
 
@@ -51,15 +51,15 @@ class _FakeGimbalHW:
         self.writes: list[tuple[float, float]] = []
         self.cleaned = False
 
-    def write(self, pan_delta: float, tilt_abs: float) -> None:
-        self.writes.append((pan_delta, tilt_abs))
+    def write(self, pan_abs: float, tilt_abs: float) -> None:
+        self.writes.append((pan_abs, tilt_abs))
 
     def cleanup(self) -> None:
         self.cleaned = True
 
 
 class _FailingGimbalHW(_FakeGimbalHW):
-    def write(self, pan_delta: float, tilt_abs: float) -> None:
+    def write(self, pan_abs: float, tilt_abs: float) -> None:
         raise RuntimeError("pwm failed")
 
 
@@ -136,7 +136,7 @@ class TestMainPipeline(unittest.TestCase):
         self.assertEqual(len(comm.sent), 1)
         self.assertEqual(comm.sent[0]["cmd"], "move")
         self.assertEqual(len(gimbal_hw.writes), 1)
-        self.assertEqual(gimbal_hw.writes[0], (1.0, 95.0))
+        self.assertEqual(gimbal_hw.writes[0], (10.0, 45.0))
 
     def test_control_loop_returns_when_vision_fails(self):
         planner = _FakePlanner()
@@ -231,7 +231,7 @@ class TestMainPipeline(unittest.TestCase):
         )
         _dispatch_gimbal(output, hw)
         self.assertEqual(len(hw.writes), 1)
-        self.assertEqual(hw.writes[0], (5.0, 87.0))
+        self.assertEqual(hw.writes[0], (15.0, 87.0))
 
 
 if __name__ == "__main__":

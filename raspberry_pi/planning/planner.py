@@ -12,10 +12,10 @@ class Planner:
         self._lost_time_s = 0.0
         self._last_move: MoveCommand = {"cmd": "move", "v": 0.0, "w": 0.0}
         self._last_gimbal = GimbalOutput(
-            pan_delta=self._cfg.pan_front,
-            tilt_delta=self._cfg.tilt_center,
-            pan_abs=self._cfg.pan_front,
-            tilt_abs=self._cfg.tilt_center,
+            pan_delta=0.0,
+            tilt_delta=0.0,
+            pan_abs=self._gimbal.pan_abs,
+            tilt_abs=self._gimbal.tilt_abs,
         )
 
     def reset(self) -> None:
@@ -24,10 +24,10 @@ class Planner:
         self._gimbal.reset()
         self._last_move = {"cmd": "move", "v": 0.0, "w": 0.0}
         self._last_gimbal = GimbalOutput(
-            pan_delta=self._cfg.pan_front,
-            tilt_delta=self._cfg.tilt_center,
-            pan_abs=self._cfg.pan_front,
-            tilt_abs=self._cfg.tilt_center,
+            pan_delta=0.0,
+            tilt_delta=0.0,
+            pan_abs=self._gimbal.pan_abs,
+            tilt_abs=self._gimbal.tilt_abs,
         )
 
     def update(self, target: VisionTarget | None, dt_s: float) -> tuple[MoveCommand, GimbalOutput]:
@@ -57,8 +57,8 @@ class Planner:
             return (self._last_move, self._last_gimbal)
 
         self._lost_time_s = 0.0
-        move = self._follow.compute(target)
         gimbal = self._gimbal.compute(target)
+        move = self._follow.compute(target, gimbal.pan_abs)
         self._last_move = move
         self._last_gimbal = gimbal
         return (move, gimbal)

@@ -106,7 +106,7 @@ def _dispatch_gimbal(
     hw: GimbalHardware,
 ) -> None:
     try:
-        hw.write(gimbal.pan_delta, gimbal.tilt_abs)
+        hw.write(gimbal.pan_abs, gimbal.tilt_abs)
     except Exception as exc:
         print(f"[MAIN] gimbal write failed: {exc}")
         raise
@@ -152,9 +152,9 @@ def _run_control_loop(
                 "[CONTROL] "
                 f"target={target_state} "
                 f"move(v={move_cmd['v']:.3f},w={move_cmd['w']:.3f}) "
-                f"gimbal(pan_delta={gimbal.pan_delta:.3f},"
+                f"gimbal(pan_abs={gimbal.pan_abs:.3f},"
                 f"tilt_abs={gimbal.tilt_abs:.3f},"
-                f"pan_abs={gimbal.pan_abs:.3f})"
+                f"pan_delta={gimbal.pan_delta:.3f})"
             )
         try:
             comm.send_message(move_cmd)
