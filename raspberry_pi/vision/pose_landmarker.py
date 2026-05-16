@@ -96,13 +96,13 @@ def draw_pose_landmarks(
             body_width = info["width"]
 
             if draw_center:
-                # 绘制髋关节中心（使用 info 中的精确坐标）
+                # 绘制胸口中心（使用 info 中的精确坐标）
                 cv2.circle(annotated, (center_x, center_y), 8, (0, 255, 255), -1)
                 cv2.circle(annotated, (center_x, center_y), 8, (0, 0, 0), 2)
 
             if draw_bbox:
                 # 使用与实际输出一致的 height/width 绘制边界框
-                # 以髋关节中心为基准
+                # 以胸口中心为基准
                 x1 = center_x - body_width // 2
                 y1 = center_y - body_height // 2
                 x2 = x1 + body_width
@@ -118,7 +118,7 @@ def draw_pose_landmarks(
                 cv2.rectangle(annotated, (x1, y1), (x2, y2), (255, 0, 0), 2)
 
                 # 绘制与实际输出一致的尺寸标签
-                label = f"H:{body_height} W:{body_width}"
+                label = f"C:{body_height} W:{body_width}"
                 cv2.putText(
                     annotated,
                     label,
@@ -143,12 +143,12 @@ def extract_pose_info(pose_landmarks, image_width: int, image_height: int) -> di
 
     Returns:
         dict: {
-            "target_x": int,   # Hip center x coordinate
-            "target_y": int,   # Hip center y coordinate
+            "target_x": int,   # Chest center x coordinate (mid-shoulder)
+            "target_y": int,   # Chest center y coordinate (mid-shoulder)
             "height": int,     # Body height (nose to knee)
             "width": int,      # Body width (shoulder to shoulder)
-            "target_x_norm": float, # Hip center x in [0,1]
-            "target_y_norm": float, # Hip center y in [0,1]
+            "target_x_norm": float, # Chest center x in [0,1]
+            "target_y_norm": float, # Chest center y in [0,1]
             "x_error_norm": float,  # Horizontal error in [-1,1]
             "y_error_norm": float,  # Vertical error in [-1,1]
             "height_norm": float,   # Body height normalized by image height
@@ -160,14 +160,14 @@ def extract_pose_info(pose_landmarks, image_width: int, image_height: int) -> di
     if num_landmarks < 33:
         return {}
 
-    # 髋关节中心 (23: 左髋, 24: 右髋)
-    hip_left_x = pose_landmarks[23].x * image_width
-    hip_left_y = pose_landmarks[23].y * image_height
-    hip_right_x = pose_landmarks[24].x * image_width
-    hip_right_y = pose_landmarks[24].y * image_height
+    # 胸口中心 (11: 左肩, 12: 右肩 的中点)
+    shoulder_left_x = pose_landmarks[11].x * image_width
+    shoulder_left_y = pose_landmarks[11].y * image_height
+    shoulder_right_x = pose_landmarks[12].x * image_width
+    shoulder_right_y = pose_landmarks[12].y * image_height
 
-    center_x = int((hip_left_x + hip_right_x) / 2)
-    center_y = int((hip_left_y + hip_right_y) / 2)
+    center_x = int((shoulder_left_x + shoulder_right_x) / 2)
+    center_y = int((shoulder_left_y + shoulder_right_y) / 2)
 
     # 高度: 鼻尖(0) 到 膝盖较低者 (25: 左膝, 26: 右膝)
     nose_y = pose_landmarks[0].y * image_height
@@ -177,8 +177,6 @@ def extract_pose_info(pose_landmarks, image_width: int, image_height: int) -> di
     body_height = int(abs(knee_y - nose_y))
 
     # 宽度: 左肩(11) 到 右肩(12)
-    shoulder_left_x = pose_landmarks[11].x * image_width
-    shoulder_right_x = pose_landmarks[12].x * image_width
     body_width = int(abs(shoulder_right_x - shoulder_left_x))
 
     # 置信度: 使用双肩(11, 12)和双髋(23, 24)的 visibility 平均值

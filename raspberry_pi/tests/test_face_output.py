@@ -11,7 +11,8 @@ import os
 # Add parent directory to path to import vision module
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from vision.face_landmarker import run_face_landmarker_on_camera
+from vision.face_landmarker import _run_face_opencv
+import argparse
 
 
 class FaceTester:

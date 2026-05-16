@@ -11,6 +11,10 @@ class GimbalController:
         self._cfg = config
         self._pan_abs = _clamp(config.pan_center, config.pan_min, config.pan_max)
         self._tilt_abs = _clamp(config.tilt_center, config.tilt_min, config.tilt_max)
+        self._filtered_x_err = 0.0
+        self._filtered_y_err = 0.0
+        self._prev_x_err = 0.0
+        self._prev_y_err = 0.0
 
     @property
     def pan_abs(self) -> float:
@@ -29,6 +33,10 @@ class GimbalController:
         self._tilt_abs = (
             _clamp(tilt_target, self._cfg.tilt_min, self._cfg.tilt_max)
         )
+        self._filtered_x_err = 0.0
+        self._filtered_y_err = 0.0
+        self._prev_x_err = 0.0
+        self._prev_y_err = 0.0
 
     def compute(self, target: VisionTarget) -> GimbalOutput:
         x_err = target.x_error_norm
@@ -39,18 +47,47 @@ class GimbalController:
         if abs(y_err) < self._cfg.deadband_y:
             y_err = 0.0
 
+        a_err = _clamp(self._cfg.gimbal_error_alpha, 0.0, 1.0)
+        self._filtered_x_err = (a_err * x_err) + ((1.0 - a_err) * self._filtered_x_err)
+        self._filtered_y_err = (a_err * y_err) + ((1.0 - a_err) * self._filtered_y_err)
+
+        x_err = 0.0 if abs(self._filtered_x_err) < self._cfg.deadband_x else self._filtered_x_err
+        y_err = 0.0 if abs(self._filtered_y_err) < self._cfg.deadband_y else self._filtered_y_err
+
+        x_derivative = x_err - self._prev_x_err
+        y_derivative = y_err - self._prev_y_err
+        self._prev_x_err = x_err
+        self._prev_y_err = y_err
+
         pan_span_half = (self._cfg.pan_max - self._cfg.pan_min) / 2.0
         tilt_span_half = (self._cfg.tilt_max - self._cfg.tilt_min) / 2.0
 
-        raw_pan_delta = self._cfg.kp_pan * x_err * pan_span_half
-        raw_tilt_delta = -self._cfg.kp_tilt * y_err * tilt_span_half
+        raw_pan_delta = -(
+            (self._cfg.kp_pan * x_err) + (self._cfg.kd_pan * x_derivative)
+        ) * pan_span_half
+        raw_tilt_delta = (
+            (self._cfg.kp_tilt * y_err) + (self._cfg.kd_tilt * y_derivative)
+        ) * tilt_span_half
 
         a = self._cfg.smoothing_alpha_gimbal
         prev_pan = self._pan_abs
         prev_tilt = self._tilt_abs
 
-        pan_delta = a * raw_pan_delta
-        tilt_delta = a * raw_tilt_delta
+        pan_delta = _clamp(
+            a * raw_pan_delta,
+            -self._cfg.max_pan_delta_per_update,
+            self._cfg.max_pan_delta_per_update,
+        )
+        tilt_delta = _clamp(
+            a * raw_tilt_delta,
+            -self._cfg.max_tilt_delta_per_update,
+            self._cfg.max_tilt_delta_per_update,
+        )
+
+        if abs(pan_delta) < self._cfg.min_pan_delta_per_update:
+            pan_delta = 0.0
+        if abs(tilt_delta) < self._cfg.min_tilt_delta_per_update:
+            tilt_delta = 0.0
 
         self._pan_abs = round(
             _clamp(prev_pan + pan_delta, self._cfg.pan_min, self._cfg.pan_max), 3

@@ -87,6 +87,19 @@ class TestGimbalHardware(unittest.TestCase):
         self.assertGreater(len(pan_duties), 1)
         self.assertGreater(len(tilt_duties), 1)
 
+    def test_write_skips_tiny_angle_changes(self):
+        hw = GimbalHardware(
+            GimbalConfig(pan_pin=17, tilt_pin=27, min_angle_change_deg=0.5),
+            gpio_module=self.fake_gpio,
+        )
+
+        hw.write(0.2, 45.2)
+
+        pan_duties = self.fake_gpio._pwms[17]._duty_cycles
+        tilt_duties = self.fake_gpio._pwms[27]._duty_cycles
+        self.assertEqual(len(pan_duties), 1)
+        self.assertEqual(len(tilt_duties), 1)
+
     def test_angle_to_duty_maps_range(self):
         self.assertAlmostEqual(
             GimbalHardware._angle_to_duty(-135.0, -135.0, 135.0), 2.5
@@ -134,14 +147,14 @@ class TestGimbalHardware(unittest.TestCase):
             gpio_module=self.fake_gpio,
         )
 
-        hw.write(0.0, -90.0)
+        hw.write(0.0, 0.0)
         tilt_duties = self.fake_gpio._pwms[27]._duty_cycles
-        self.assertAlmostEqual(tilt_duties[0], 7.5, places=3)
-        self.assertAlmostEqual(tilt_duties[1], 2.5, places=3)
+        self.assertAlmostEqual(tilt_duties[0], 10.0, places=3)
+        self.assertAlmostEqual(tilt_duties[1], 7.5, places=3)
 
-        hw.write(0.0, 90.0)
+        hw.write(0.0, 60.0)
         tilt_duties = self.fake_gpio._pwms[27]._duty_cycles
-        self.assertAlmostEqual(tilt_duties[2], 12.5, places=3)
+        self.assertAlmostEqual(tilt_duties[2], 10.833, places=3)
 
     def test_clamp_at_boundaries(self):
         hw = GimbalHardware(

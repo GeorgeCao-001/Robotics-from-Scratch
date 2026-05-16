@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from math import isfinite
 from typing import Any, Callable
 
+_MIN_TARGET_CONFIDENCE = 0.7
+
 from raspberry_pi.hardware import GimbalConfig, GimbalHardware, SerialComm, SerialConfig
 from raspberry_pi.planning.config import PlanningConfig
 from raspberry_pi.planning.planner import Planner
@@ -92,6 +94,9 @@ def _to_vision_target(pose_info: dict[str, Any]) -> VisionTarget | None:
         return None
     confidence = min(max(confidence, 0.0), 1.0)
 
+    if confidence < _MIN_TARGET_CONFIDENCE:
+        return None
+
     return VisionTarget(
         x_error_norm=x_error_norm,
         y_error_norm=y_error_norm,
@@ -148,13 +153,18 @@ def _run_control_loop(
         if runtime.debug_control and now_t - last_debug_t >= 0.5:
             last_debug_t = now_t
             target_state = "yes" if target is not None else "no"
+            x_err = "None" if target is None else f"{target.x_error_norm:.3f}"
+            y_err = "None" if target is None else f"{target.y_error_norm:.3f}"
             print(
                 "[CONTROL] "
                 f"target={target_state} "
+                f"x_err={x_err} "
+                f"y_err={y_err} "
                 f"move(v={move_cmd['v']:.3f},w={move_cmd['w']:.3f}) "
                 f"gimbal(pan_abs={gimbal.pan_abs:.3f},"
                 f"tilt_abs={gimbal.tilt_abs:.3f},"
-                f"pan_delta={gimbal.pan_delta:.3f})"
+                f"pan_delta={gimbal.pan_delta:.3f},"
+                f"tilt_delta={gimbal.tilt_delta:.3f})"
             )
         try:
             comm.send_message(move_cmd)
@@ -200,6 +210,8 @@ def run(runtime: RuntimeConfig) -> None:
         GimbalConfig(
             pan_pin=planning_config.gimbal_pan_pin,
             tilt_pin=planning_config.gimbal_tilt_pin,
+            initial_pan_angle=planning_config.pan_center,
+            initial_tilt_angle=planning_config.tilt_center,
             debug=runtime.debug_gimbal,
         )
     )
@@ -211,7 +223,8 @@ def run(runtime: RuntimeConfig) -> None:
         target = _to_vision_target(pose_info)
         if target is None:
             if runtime.debug_vision:
-                print(f"[MAIN] rejected pose_info keys={sorted(pose_info.keys())}")
+                conf = pose_info.get("confidence", "N/A")
+                print(f"[MAIN] rejected pose_info confidence={conf} keys={sorted(pose_info.keys())}")
             return
         if runtime.debug_vision:
             print(
