@@ -16,14 +16,17 @@ class PlanningConfig:
     v_max: float = 0.5
     w_max: float = 0.8
 
-    pan_min: float = -180.0
-    pan_max: float = 180.0
-    tilt_min: float = 0.0
-    tilt_max: float = 180.0
+    pan_min: float = -135.0
+    pan_max: float = 135.0
+    tilt_min: float = -90.0
+    tilt_max: float = 90.0
 
-    pan_front: float = 0.0
-    tilt_center: float = 90.0
+    pan_center: float = 0.0
+    tilt_center: float = 0.0
 
     smoothing_alpha_move: float = 0.3
     smoothing_alpha_gimbal: float = 0.5
     lost_timeout_s: float = 0.8
+
+    gimbal_pan_pin: int = 17
+    gimbal_tilt_pin: int = 27

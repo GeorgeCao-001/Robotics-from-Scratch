@@ -40,31 +40,36 @@
 
 ### 云台模块
 - 输入：目标位置偏移
-- 输出：舵机角度指令（float）
+- 输出：`GimbalOutput(pan_delta, tilt_delta, pan_abs, tilt_abs)` — 树莓派内部数据类
 
-示例：
-
-```json
-{
-  "pan": -12.5,
-  "tilt": 3.0
-}
+```python
+GimbalOutput(
+    pan_delta=-12.5,   # 水平本轮角度变化量，仅供调试
+    tilt_delta=3.0,    # 垂直本轮角度变化量，仅供调试
+    pan_abs=77.5,      # 水平绝对角度（传给 GPIO 硬件层）
+    tilt_abs=30.0,     # 垂直绝对角度（传给 GPIO 硬件层）
+)
 ```
 
 角度定义：
-- `pan` 为本次调用的相对增量角，范围 `[-180, 180]`（内部保留累计绝对角）
-- `tilt` 为本次调用的相对增量角（内部保留累计绝对角并限制在 `[0, 180]`）
+- `pan_abs` 为水平绝对角，范围 `[-135, 135]`，传给 270° 水平舵机
+- `tilt_abs` 为垂直绝对角，范围 `[-90, 90]`，传给 180° 垂直舵机
+- `pan_delta` 为本轮水平角度变化量，仅供调试
+- `tilt_delta` 为本轮垂直角度变化量，仅供调试
+
+**云台舵机由树莓派 GPIO PWM 直接控制**，不经过 UART/Arduino。
 
 **核心逻辑**：如果人脸在画面左侧，增加偏转角（pan），使人脸回到画面中心。
 
 **控制策略**：
-- 水平舵机（pan）：控制左右转动
-- 垂直舵机（tilt）：控制上下转动
+- 水平舵机（pan）：绝对位置舵机，控制水平角度
+- 垂直舵机（tilt）：绝对位置舵机，控制上下角度
 - 采用简单的比例控制（P控制）
+- 目标进入死区/居中后，云台保持当前绝对角度，不自动回到 0°
 
 实现约定：
 - 云台控制状态与增量计算统一在 `planning/gimbal_controller.py`
-- `hardware/` 只负责通信接口（如 `serial_comm.py`），不重复维护云台姿态状态
+- `hardware/gimbal.py` 负责 GPIO PWM 输出，不维护云台姿态状态
 
 ---
 
@@ -89,9 +94,9 @@
 v = Kp_distance × (target_distance - actual_distance)
 ```
 
-角速度控制（基于水平归一化误差）：
+角速度控制（基于水平舵机相对 0° 的绝对偏角）：
 ```
-w = Kp_angle × x_error_norm
+w = Kp_angle × (pan_abs / pan_half_span)
 ```
 
 建议：优先在 planning 中使用归一化量（`x_error_norm`, `y_error_norm`, `width_norm` 等）做控制，

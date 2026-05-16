@@ -17,7 +17,9 @@ class MoveCommand(TypedDict):
     w: float
 
 
-class GimbalCommand(TypedDict):
-    cmd: str
-    pan: float
-    tilt: float
+@dataclass(frozen=True)
+class GimbalOutput:
+    pan_delta: float   # frame-to-frame change, debug only
+    tilt_delta: float  # frame-to-frame change, debug only
+    pan_abs: float     # horizontal absolute angle, [-135, 135]
+    tilt_abs: float    # vertical absolute angle, [-90, 90]

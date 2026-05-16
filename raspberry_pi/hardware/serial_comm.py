@@ -13,7 +13,7 @@ JsonMessage = dict[str, Any]
 @dataclass(frozen=True)
 class SerialConfig:
     port: str
-    baudrate: int = 9600
+    baudrate: int = 115200
     timeout_s: float = 0.05
     write_timeout_s: float = 1.0
     newline: str = "\n"
@@ -62,12 +62,6 @@ class SerialComm:
     def send_move(self, v: float, w: float) -> None:
         self.send_message({"cmd": "move", "v": float(v), "w": float(w)})
 
-    def send_gimbal(self, pan: float, tilt: float) -> None:
-        self.send_message({"cmd": "gimbal", "pan": float(pan), "tilt": float(tilt)})
-
-    # FIXME
-    # when it stops, the move turns (0.0, 0.0) immediately
-    # might be not good
     def send_stop(self) -> None:
         self.send_move(0.0, 0.0)
 
@@ -107,7 +101,7 @@ class SerialComm:
 
     def _validate_message(self, message: JsonMessage) -> None:
         cmd = message.get("cmd")
-        if cmd not in {"move", "gimbal", "status"}:
+        if cmd not in {"move", "status"}:
             raise ValueError("Unsupported cmd")
 
         if cmd == "status":
@@ -119,13 +113,6 @@ class SerialComm:
             if not _is_number(v) or not _is_number(w):
                 raise ValueError("move command requires numeric v and w")
             return
-
-        pan = message.get("pan")
-        tilt = message.get("tilt")
-        if not _is_number(pan) or not _is_number(tilt):
-            raise ValueError("gimbal command requires numeric pan and tilt")
-        if not -180.0 <= float(pan) <= 180.0:
-            raise ValueError("pan delta must be in [-180, 180]")
 
     def _log(self, direction: str, message: str) -> None:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

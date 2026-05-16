@@ -7,16 +7,16 @@ from dataclasses import dataclass
 from math import isfinite
 from typing import Any, Callable
 
-from raspberry_pi.hardware import SerialComm, SerialConfig
+from raspberry_pi.hardware import GimbalConfig, GimbalHardware, SerialComm, SerialConfig
 from raspberry_pi.planning.config import PlanningConfig
 from raspberry_pi.planning.planner import Planner
-from raspberry_pi.planning.types import VisionTarget
+from raspberry_pi.planning.types import GimbalOutput, VisionTarget
 
 
 @dataclass(frozen=True)
 class RuntimeConfig:
     port: str
-    baudrate: int = 9600
+    baudrate: int = 115200
     camera_backend: str = "opencv"
     camera_id: int = 0
     show_window: bool = False
@@ -27,6 +27,9 @@ class RuntimeConfig:
     control_hz: float = 10.0
     detection_stale_s: float = 0.2
     status_interval_s: float = 0.0
+    debug_vision: bool = False
+    debug_control: bool = False
+    debug_gimbal: bool = False
 
 
 class SharedVisionState:
@@ -98,9 +101,21 @@ def _to_vision_target(pose_info: dict[str, Any]) -> VisionTarget | None:
     )
 
 
+def _dispatch_gimbal(
+    gimbal: GimbalOutput,
+    hw: GimbalHardware,
+) -> None:
+    try:
+        hw.write(gimbal.pan_abs, gimbal.tilt_abs)
+    except Exception as exc:
+        print(f"[MAIN] gimbal write failed: {exc}")
+        raise
+
+
 def _run_control_loop(
     planner: Planner,
     comm: SerialComm,
+    gimbal_hw: GimbalHardware,
     shared: SharedVisionState,
     runtime: RuntimeConfig,
     vision_alive: Callable[[], bool],
@@ -114,6 +129,7 @@ def _run_control_loop(
     period_s = 1.0 / runtime.control_hz
     last_t = now_fn()
     last_status_t = last_t
+    last_debug_t = last_t
 
     while vision_alive():
         loop_start_t = now_fn()
@@ -128,12 +144,32 @@ def _run_control_loop(
         last_t = now_t
 
         target = shared.get(now_t, runtime.detection_stale_s)
-        cmds = planner.update(target, dt_s)
+        move_cmd, gimbal = planner.update(target, dt_s)
+        if runtime.debug_control and now_t - last_debug_t >= 0.5:
+            last_debug_t = now_t
+            target_state = "yes" if target is not None else "no"
+            print(
+                "[CONTROL] "
+                f"target={target_state} "
+                f"move(v={move_cmd['v']:.3f},w={move_cmd['w']:.3f}) "
+                f"gimbal(pan_abs={gimbal.pan_abs:.3f},"
+                f"tilt_abs={gimbal.tilt_abs:.3f},"
+                f"pan_delta={gimbal.pan_delta:.3f})"
+            )
         try:
-            for cmd in cmds:
-                comm.send_message(cmd)
+            comm.send_message(move_cmd)
         except Exception as exc:
             print(f"[MAIN] send failed: {exc}")
+            on_fatal_error(exc)
+            try:
+                comm.send_stop()
+            except Exception:
+                pass
+            return
+
+        try:
+            _dispatch_gimbal(gimbal, gimbal_hw)
+        except Exception as exc:
             on_fatal_error(exc)
             try:
                 comm.send_stop()
@@ -153,14 +189,20 @@ def _run_control_loop(
 
         elapsed = now_fn() - loop_start_t
         sleep_fn(max(0.0, period_s - elapsed))
-        # nothing dealing with frame drops if it happens
-        # but not that urgent
 
 
 def run(runtime: RuntimeConfig) -> None:
-    planner = Planner(PlanningConfig())
+    planning_config = PlanningConfig()
+    planner = Planner(planning_config)
     shared = SharedVisionState()
     comm = SerialComm(SerialConfig(port=runtime.port, baudrate=runtime.baudrate))
+    gimbal_hw = GimbalHardware(
+        GimbalConfig(
+            pan_pin=planning_config.gimbal_pan_pin,
+            tilt_pin=planning_config.gimbal_tilt_pin,
+            debug=runtime.debug_gimbal,
+        )
+    )
     stop_event = threading.Event()
 
     def on_detected(pose_info: dict[str, Any]) -> None:
@@ -168,13 +210,25 @@ def run(runtime: RuntimeConfig) -> None:
             raise RuntimeError("control loop stopped")
         target = _to_vision_target(pose_info)
         if target is None:
+            if runtime.debug_vision:
+                print(f"[MAIN] rejected pose_info keys={sorted(pose_info.keys())}")
             return
+        if runtime.debug_vision:
+            print(
+                "[MAIN] target accepted "
+                f"x_error={target.x_error_norm:.3f} "
+                f"y_error={target.y_error_norm:.3f} "
+                f"height={target.height_norm:.3f} "
+                f"width={target.width_norm:.3f} "
+                f"conf={target.confidence:.3f}"
+            )
         shared.update(target, time.monotonic())
 
     def control_worker() -> None:
         _run_control_loop(
             planner=planner,
             comm=comm,
+            gimbal_hw=gimbal_hw,
             shared=shared,
             runtime=runtime,
             vision_alive=lambda: not stop_event.is_set(),
@@ -206,6 +260,7 @@ def run(runtime: RuntimeConfig) -> None:
             "frame_height": runtime.frame_height,
             "camera_fps": runtime.camera_fps,
             "num_poses": runtime.num_poses,
+            "debug_vision": runtime.debug_vision,
         }
         if runtime.camera_backend == "rpicam":
             run_pose_landmarker_on_rpicam(
@@ -228,6 +283,10 @@ def run(runtime: RuntimeConfig) -> None:
             comm.send_stop()
         except Exception:
             pass
+        try:
+            gimbal_hw.cleanup()
+        except Exception:
+            pass
         comm.close()
 
 
@@ -236,7 +295,7 @@ def _parse_args() -> RuntimeConfig:
     parser.add_argument(
         "--port", required=True, help="Serial port, e.g. /dev/ttyACM0 (Linux) or /dev/cu.usbmodemxxxx (macOS)"
     )
-    parser.add_argument("--baudrate", type=int, default=9600, help="UART baudrate")
+    parser.add_argument("--baudrate", type=int, default=115200, help="UART baudrate")
     parser.add_argument(
         "--camera-backend",
         choices=["opencv", "rpicam"],
@@ -276,6 +335,21 @@ def _parse_args() -> RuntimeConfig:
         default=0.0,
         help="Optional status polling period; <=0 disables",
     )
+    parser.add_argument(
+        "--debug-vision",
+        action="store_true",
+        help="Print camera frame and pose detection diagnostics",
+    )
+    parser.add_argument(
+        "--debug-control",
+        action="store_true",
+        help="Print control loop diagnostics",
+    )
+    parser.add_argument(
+        "--debug-gimbal",
+        action="store_true",
+        help="Print GPIO gimbal PWM diagnostics",
+    )
     args = parser.parse_args()
     return RuntimeConfig(
         port=args.port,
@@ -290,6 +364,9 @@ def _parse_args() -> RuntimeConfig:
         control_hz=args.control_hz,
         detection_stale_s=args.detection_stale_s,
         status_interval_s=args.status_interval_s,
+        debug_vision=args.debug_vision,
+        debug_control=args.debug_control,
+        debug_gimbal=args.debug_gimbal,
     )
 
 
