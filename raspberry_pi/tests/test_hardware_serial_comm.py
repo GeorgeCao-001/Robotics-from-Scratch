@@ -44,9 +44,9 @@ class TestSerialComm(unittest.TestCase):
         data = json.loads(payload.strip())
         self.assertEqual(data, {"cmd": "move", "v": 0.2, "w": -0.1})
 
-    def test_send_gimbal_rejects_out_of_range_pan(self):
+    def test_rejects_unsupported_cmd(self):
         with self.assertRaises(ValueError):
-            self.comm.send_gimbal(181.0, 0.0)
+            self.comm.send_message({"cmd": "gimbal", "pan": 0.0, "tilt": 0.0})
 
     def test_read_message_parses_json_object(self):
         self.fake.reads.append(b'{"status":"ok","battery":87}\n')

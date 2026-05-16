@@ -22,10 +22,13 @@ class TestPlanner(unittest.TestCase):
             width_norm=0.22,
             confidence=0.95,
         )
-        cmds = self.planner.update(target, dt_s=0.03)
-        self.assertEqual(len(cmds), 2)
-        self.assertEqual(cmds[0]["cmd"], "move")
-        self.assertEqual(cmds[1]["cmd"], "gimbal")
+        move, gimbal = self.planner.update(target, dt_s=0.03)
+        self.assertEqual(move["cmd"], "move")
+        self.assertIsNotNone(gimbal)
+        self.assertTrue(hasattr(gimbal, "pan_delta"))
+        self.assertTrue(hasattr(gimbal, "tilt_delta"))
+        self.assertTrue(hasattr(gimbal, "pan_abs"))
+        self.assertTrue(hasattr(gimbal, "tilt_abs"))
 
     def test_short_loss_keeps_last_commands(self):
         target = VisionTarget(
@@ -36,11 +39,10 @@ class TestPlanner(unittest.TestCase):
             confidence=0.9,
         )
         self.planner.update(target, dt_s=0.03)
-        second = self.planner.update(None, dt_s=0.1)
-        self.assertEqual(second[0]["cmd"], "move")
-        self.assertEqual(second[1]["cmd"], "gimbal")
-        self.assertEqual(second[1]["pan"], 0.0)
-        self.assertEqual(second[1]["tilt"], 0.0)
+        move, gimbal = self.planner.update(None, dt_s=0.1)
+        self.assertEqual(move["cmd"], "move")
+        self.assertEqual(gimbal.pan_delta, 0.0)
+        self.assertEqual(gimbal.tilt_delta, 0.0)
 
     def test_long_loss_sends_stop(self):
         target = VisionTarget(
@@ -51,14 +53,12 @@ class TestPlanner(unittest.TestCase):
             confidence=0.9,
         )
         self.planner.update(target, dt_s=0.03)
-        cmds = self.planner.update(None, dt_s=0.6)
-        self.assertEqual(len(cmds), 2)
-        self.assertEqual(cmds[0]["cmd"], "move")
-        self.assertEqual(cmds[0]["v"], 0.0)
-        self.assertEqual(cmds[0]["w"], 0.0)
-        self.assertEqual(cmds[1]["cmd"], "gimbal")
-        self.assertEqual(cmds[1]["pan"], 0.0)
-        self.assertEqual(cmds[1]["tilt"], 0.0)
+        move, gimbal = self.planner.update(None, dt_s=0.6)
+        self.assertEqual(move["cmd"], "move")
+        self.assertEqual(move["v"], 0.0)
+        self.assertEqual(move["w"], 0.0)
+        self.assertEqual(gimbal.pan_delta, 0.0)
+        self.assertEqual(gimbal.tilt_delta, 0.0)
 
 
 if __name__ == "__main__":
