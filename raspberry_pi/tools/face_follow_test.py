@@ -33,7 +33,7 @@ def _to_vision_target(face_info: dict) -> VisionTarget:
     )
 
 
-def _start_rpicam(args: argparse.Namespace) -> subprocess.Popen:
+def _start_rpicam(args: argparse.Namespace, output_path: str) -> subprocess.Popen:
     return subprocess.Popen(
         [
             "rpicam-vid",
@@ -53,9 +53,9 @@ def _start_rpicam(args: argparse.Namespace) -> subprocess.Popen:
             "--verbose",
             "0",
             "-o",
-            "-",
+            output_path,
         ],
-        stdout=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         bufsize=0,
     )
@@ -145,20 +145,18 @@ def run(args: argparse.Namespace) -> None:
         )
     )
 
-    proc = _start_rpicam(args)
-    if proc.stdout is None:
-        raise RuntimeError("failed to open rpicam-vid stdout")
+    proc = None
+    fifo_fd = -1
+    fifo_path = ""
     stderr_lines: list[str] = []
-    threading.Thread(target=_drain_stderr, args=(proc, stderr_lines), daemon=True).start()
 
     buf = bytearray()
-    stdout_fd = proc.stdout.fileno()
-    start_s = time.monotonic()
-    last_control_s = start_s
-    last_frame_s = start_s
+    start_s = 0.0
+    last_control_s = 0.0
+    last_frame_s = 0.0
     last_debug_s = 0.0
     last_timestamp_ms = 0
-    frame_timeout_s = max(5.0, 3.0 / max(args.camera_fps, 1))
+    frame_timeout_s = max(15.0, 5.0 / max(args.camera_fps, 1))
     max_buffer_bytes = max(args.frame_width * args.frame_height * 4, 10 * 1024 * 1024)
 
     try:
@@ -168,6 +166,22 @@ def run(args: argparse.Namespace) -> None:
         gimbal_hw.setup()
 
         with vision.FaceLandmarker.create_from_options(_face_options()) as landmarker:
+            fifo_path = f"/tmp/rpicam_face_{os.getpid()}.mjpeg"
+            if os.path.exists(fifo_path):
+                os.unlink(fifo_path)
+            os.mkfifo(fifo_path)
+
+            proc = _start_rpicam(args, fifo_path)
+            threading.Thread(
+                target=_drain_stderr,
+                args=(proc, stderr_lines),
+                daemon=True,
+            ).start()
+            fifo_fd = os.open(fifo_path, os.O_RDWR | os.O_NONBLOCK)
+            start_s = time.monotonic()
+            last_control_s = start_s
+            last_frame_s = start_s
+
             while True:
                 if proc.poll() is not None:
                     details = "\n".join(stderr_lines[-10:])
@@ -175,7 +189,7 @@ def run(args: argparse.Namespace) -> None:
                         f"rpicam-vid exited with code {proc.returncode}: {details}"
                     )
 
-                readable, _, _ = select.select([proc.stdout], [], [], 0.2)
+                readable, _, _ = select.select([fifo_fd], [], [], 0.2)
                 if not readable:
                     if time.monotonic() - last_frame_s > frame_timeout_s:
                         details = "\n".join(stderr_lines[-10:])
@@ -185,7 +199,10 @@ def run(args: argparse.Namespace) -> None:
                         )
                     continue
 
-                chunk = os.read(stdout_fd, 4096)
+                try:
+                    chunk = os.read(fifo_fd, 4096)
+                except BlockingIOError:
+                    continue
                 if not chunk:
                     details = "\n".join(stderr_lines[-10:])
                     raise RuntimeError(
@@ -244,12 +261,23 @@ def run(args: argparse.Namespace) -> None:
         except Exception:
             pass
         comm.close()
-        proc.terminate()
-        try:
-            proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+        if proc is not None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        if fifo_fd != -1:
+            try:
+                os.close(fifo_fd)
+            except OSError:
+                pass
+        if fifo_path and os.path.exists(fifo_path):
+            try:
+                os.unlink(fifo_path)
+            except OSError:
+                pass
         if args.show_window:
             cv2.destroyAllWindows()
 

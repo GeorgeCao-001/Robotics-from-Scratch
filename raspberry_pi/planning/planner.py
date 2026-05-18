@@ -51,7 +51,7 @@ class Planner:
             return (self._last_move, self._last_gimbal)
 
         self._lost_time_s = 0.0
-        gimbal = self._gimbal.compute(target)
+        gimbal = self._gimbal.compute(target, dt_s)
         move = self._follow.compute(target, gimbal.pan_abs)
         self._last_move = move
         self._last_gimbal = gimbal

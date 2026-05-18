@@ -224,21 +224,146 @@ class TestGimbalController(unittest.TestCase):
         self.assertEqual(output.pan_delta, 0.0)
         self.assertEqual(output.pan_abs, 0.0)
 
+    def test_pan_integral_accumulates_same_direction_error(self):
+        cfg = PlanningConfig(
+            kp_pan=0.0,
+            ki_pan=0.1,
+            kd_pan=0.0,
+            deadband_x=0.0,
+            gimbal_error_alpha=1.0,
+            integral_limit_pan=2.0,
+            max_pan_delta_per_update=200.0,
+        )
+        controller = GimbalController(cfg)
+
+        output1 = controller.compute(VisionTarget(0.5, 0.0, 0.4, 0.2, 1.0), dt_s=1.0)
+        output2 = controller.compute(VisionTarget(0.5, 0.0, 0.4, 0.2, 1.0), dt_s=1.0)
+
+        self.assertEqual(output1.pan_delta, -6.75)
+        self.assertEqual(output2.pan_delta, -13.5)
+        self.assertEqual(output2.pan_abs, -20.25)
+
+    def test_pan_integral_is_limited(self):
+        cfg = PlanningConfig(
+            kp_pan=0.0,
+            ki_pan=1.0,
+            kd_pan=0.0,
+            deadband_x=0.0,
+            gimbal_error_alpha=1.0,
+            integral_limit_pan=0.25,
+            max_pan_delta_per_update=200.0,
+        )
+        controller = GimbalController(cfg)
+
+        output1 = controller.compute(VisionTarget(1.0, 0.0, 0.4, 0.2, 1.0), dt_s=1.0)
+        output2 = controller.compute(VisionTarget(1.0, 0.0, 0.4, 0.2, 1.0), dt_s=1.0)
+
+        self.assertEqual(output1.pan_delta, -33.75)
+        self.assertEqual(output2.pan_delta, -33.75)
+
+    def test_integral_clears_when_error_enters_deadband(self):
+        cfg = PlanningConfig(
+            kp_pan=0.0,
+            ki_pan=0.1,
+            kd_pan=0.0,
+            deadband_x=0.1,
+            gimbal_error_alpha=1.0,
+            integral_limit_pan=2.0,
+            max_pan_delta_per_update=200.0,
+        )
+        controller = GimbalController(cfg)
+
+        controller.compute(VisionTarget(0.5, 0.0, 0.4, 0.2, 1.0), dt_s=1.0)
+        output_zero = controller.compute(VisionTarget(0.0, 0.0, 0.4, 0.2, 1.0), dt_s=1.0)
+        output_after_clear = controller.compute(VisionTarget(0.5, 0.0, 0.4, 0.2, 1.0), dt_s=1.0)
+
+        self.assertEqual(output_zero.pan_delta, 0.0)
+        self.assertEqual(output_after_clear.pan_delta, -6.75)
+
+    def test_reset_clears_integral(self):
+        cfg = PlanningConfig(
+            kp_pan=0.0,
+            ki_pan=0.1,
+            kd_pan=0.0,
+            deadband_x=0.0,
+            gimbal_error_alpha=1.0,
+            integral_limit_pan=2.0,
+            max_pan_delta_per_update=200.0,
+        )
+        controller = GimbalController(cfg)
+
+        controller.compute(VisionTarget(0.5, 0.0, 0.4, 0.2, 1.0), dt_s=1.0)
+        controller.reset()
+        output = controller.compute(VisionTarget(0.5, 0.0, 0.4, 0.2, 1.0), dt_s=1.0)
+
+        self.assertEqual(output.pan_delta, -6.75)
+
+    def test_integral_does_not_accumulate_without_dt(self):
+        cfg = PlanningConfig(
+            kp_pan=0.0,
+            ki_pan=0.1,
+            kd_pan=0.0,
+            deadband_x=0.0,
+            gimbal_error_alpha=1.0,
+            integral_limit_pan=2.0,
+            max_pan_delta_per_update=200.0,
+        )
+        controller = GimbalController(cfg)
+
+        output = controller.compute(VisionTarget(0.5, 0.0, 0.4, 0.2, 1.0), dt_s=0.0)
+
+        self.assertEqual(output.pan_delta, 0.0)
+
+    def test_pan_integral_does_not_accumulate_when_output_saturated(self):
+        cfg = PlanningConfig(
+            kp_pan=1.0,
+            ki_pan=1.0,
+            kd_pan=0.0,
+            deadband_x=0.0,
+            gimbal_error_alpha=1.0,
+            integral_limit_pan=2.0,
+            max_pan_delta_per_update=5.0,
+        )
+        controller = GimbalController(cfg)
+
+        output1 = controller.compute(VisionTarget(1.0, 0.0, 0.4, 0.2, 1.0), dt_s=1.0)
+        output2 = controller.compute(VisionTarget(1.0, 0.0, 0.4, 0.2, 1.0), dt_s=1.0)
+
+        self.assertEqual(output1.pan_delta, -5.0)
+        self.assertEqual(output2.pan_delta, -5.0)
+
+    def test_pan_integral_can_release_saturation(self):
+        cfg = PlanningConfig(
+            kp_pan=0.0,
+            ki_pan=1.0,
+            kd_pan=0.0,
+            deadband_x=0.0,
+            gimbal_error_alpha=1.0,
+            integral_limit_pan=2.0,
+            max_pan_delta_per_update=5.0,
+        )
+        controller = GimbalController(cfg)
+
+        controller.compute(VisionTarget(1.0, 0.0, 0.4, 0.2, 1.0), dt_s=1.0)
+        output = controller.compute(VisionTarget(-1.0, 0.0, 0.4, 0.2, 1.0), dt_s=1.0)
+
+        self.assertEqual(output.pan_delta, 0.0)
+
     def test_pan_delta_is_limited_per_update(self):
         controller = GimbalController(PlanningConfig())
 
         output = controller.compute(VisionTarget(1.0, 0.0, 0.4, 0.2, 1.0))
 
-        self.assertEqual(output.pan_delta, -4.0)
-        self.assertEqual(output.pan_abs, -4.0)
+        self.assertEqual(output.pan_delta, -10.0)
+        self.assertEqual(output.pan_abs, -10.0)
 
     def test_tilt_delta_is_limited_per_update(self):
         controller = GimbalController(PlanningConfig(kp_tilt=1.0))
 
         output = controller.compute(VisionTarget(0.0, -1.0, 0.4, 0.2, 1.0))
 
-        self.assertEqual(output.tilt_delta, -2.0)
-        self.assertEqual(output.tilt_abs, 43.0)
+        self.assertEqual(output.tilt_delta, -5.0)
+        self.assertEqual(output.tilt_abs, 40.0)
 
 
 if __name__ == "__main__":
