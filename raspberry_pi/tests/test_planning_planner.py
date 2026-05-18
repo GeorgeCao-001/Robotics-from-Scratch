@@ -8,8 +8,6 @@ from raspberry_pi.planning.types import VisionTarget
 class TestPlanner(unittest.TestCase):
     def setUp(self):
         cfg = PlanningConfig(
-            smoothing_alpha_gimbal=1.0,
-            smoothing_alpha_move=1.0,
             lost_timeout_s=0.5,
         )
         self.planner = Planner(cfg)

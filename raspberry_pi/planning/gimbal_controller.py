@@ -69,17 +69,16 @@ class GimbalController:
             (self._cfg.kp_tilt * y_err) + (self._cfg.kd_tilt * y_derivative)
         ) * tilt_span_half
 
-        a = self._cfg.smoothing_alpha_gimbal
         prev_pan = self._pan_abs
         prev_tilt = self._tilt_abs
 
         pan_delta = _clamp(
-            a * raw_pan_delta,
+            raw_pan_delta,
             -self._cfg.max_pan_delta_per_update,
             self._cfg.max_pan_delta_per_update,
         )
         tilt_delta = _clamp(
-            a * raw_tilt_delta,
+            raw_tilt_delta,
             -self._cfg.max_tilt_delta_per_update,
             self._cfg.max_tilt_delta_per_update,
         )

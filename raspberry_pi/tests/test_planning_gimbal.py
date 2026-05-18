@@ -7,7 +7,7 @@ from raspberry_pi.planning.types import VisionTarget
 
 class TestGimbalController(unittest.TestCase):
     def test_zero_error_outputs_zero_deltas(self):
-        cfg = PlanningConfig(kp_pan=1.0, kp_tilt=1.0, smoothing_alpha_gimbal=1.0)
+        cfg = PlanningConfig(kp_pan=1.0, kp_tilt=1.0)
         controller = GimbalController(cfg)
         target = VisionTarget(0.0, 0.0, 0.4, 0.2, 1.0)
         output = controller.compute(target)
@@ -22,7 +22,6 @@ class TestGimbalController(unittest.TestCase):
             kp_tilt=2.0,
             kd_pan=0.0,
             kd_tilt=0.0,
-            smoothing_alpha_gimbal=1.0,
             gimbal_error_alpha=1.0,
             min_pan_delta_per_update=0.0,
             min_tilt_delta_per_update=0.0,
@@ -54,7 +53,6 @@ class TestGimbalController(unittest.TestCase):
             kp_tilt=1.0,
             kd_pan=0.0,
             kd_tilt=0.0,
-            smoothing_alpha_gimbal=1.0,
             gimbal_error_alpha=1.0,
             min_pan_delta_per_update=0.0,
             min_tilt_delta_per_update=0.0,
@@ -75,7 +73,6 @@ class TestGimbalController(unittest.TestCase):
             kp_tilt=1.0,
             kd_pan=0.0,
             kd_tilt=0.0,
-            smoothing_alpha_gimbal=1.0,
             gimbal_error_alpha=1.0,
             min_pan_delta_per_update=0.0,
             min_tilt_delta_per_update=0.0,
@@ -91,35 +88,12 @@ class TestGimbalController(unittest.TestCase):
         self.assertEqual(output.pan_abs, 135.0)
         self.assertEqual(output.tilt_abs, 60.0)
 
-    def test_gimbal_smoothing_applies(self):
-        cfg = PlanningConfig(
-            kp_pan=1.0,
-            kp_tilt=1.0,
-            kd_pan=0.0,
-            kd_tilt=0.0,
-            smoothing_alpha_gimbal=0.5,
-            gimbal_error_alpha=1.0,
-            min_pan_delta_per_update=0.0,
-            min_tilt_delta_per_update=0.0,
-            max_pan_delta_per_update=200.0,
-            max_tilt_delta_per_update=100.0,
-        )
-        controller = GimbalController(cfg)
-        target = VisionTarget(1.0, -1.0, 0.4, 0.2, 1.0)
-        output = controller.compute(target)
-
-        self.assertEqual(output.pan_delta, -67.5)
-        self.assertEqual(output.tilt_delta, 15.0)
-        self.assertEqual(output.pan_abs, -67.5)
-        self.assertEqual(output.tilt_abs, 60.0)
-
     def test_pan_abs_reaches_negative_limit(self):
         cfg = PlanningConfig(
             kp_pan=1.0,
             kp_tilt=1.0,
             kd_pan=0.0,
             kd_tilt=0.0,
-            smoothing_alpha_gimbal=1.0,
             gimbal_error_alpha=1.0,
             min_pan_delta_per_update=0.0,
             min_tilt_delta_per_update=0.0,
@@ -140,7 +114,6 @@ class TestGimbalController(unittest.TestCase):
             kp_tilt=1.0,
             kd_pan=0.0,
             kd_tilt=0.0,
-            smoothing_alpha_gimbal=1.0,
             gimbal_error_alpha=1.0,
             min_pan_delta_per_update=0.0,
             min_tilt_delta_per_update=0.0,
@@ -158,7 +131,7 @@ class TestGimbalController(unittest.TestCase):
         self.assertEqual(output.tilt_abs, 60.0)
 
     def test_pan_abs_and_tilt_abs_properties_exposed(self):
-        cfg = PlanningConfig(kp_pan=1.0, kp_tilt=1.0, smoothing_alpha_gimbal=1.0)
+        cfg = PlanningConfig(kp_pan=1.0, kp_tilt=1.0)
         controller = GimbalController(cfg)
         controller.compute(VisionTarget(0.3, -0.2, 0.4, 0.2, 1.0))
 
@@ -171,7 +144,6 @@ class TestGimbalController(unittest.TestCase):
             kp_tilt=1.0,
             kd_pan=0.0,
             kd_tilt=0.0,
-            smoothing_alpha_gimbal=1.0,
             gimbal_error_alpha=1.0,
             min_pan_delta_per_update=0.0,
             min_tilt_delta_per_update=0.0,
@@ -192,7 +164,6 @@ class TestGimbalController(unittest.TestCase):
             kp_tilt=1.0,
             kd_pan=0.0,
             kd_tilt=0.0,
-            smoothing_alpha_gimbal=1.0,
             gimbal_error_alpha=1.0,
             min_pan_delta_per_update=0.0,
             min_tilt_delta_per_update=0.0,
@@ -209,7 +180,6 @@ class TestGimbalController(unittest.TestCase):
         cfg = PlanningConfig(
             kp_pan=1.0,
             kp_tilt=1.0,
-            smoothing_alpha_gimbal=1.0,
             deadband_x=0.1,
             deadband_y=0.1,
         )
@@ -225,7 +195,6 @@ class TestGimbalController(unittest.TestCase):
             kp_tilt=1.0,
             kd_pan=0.0,
             kd_tilt=0.0,
-            smoothing_alpha_gimbal=1.0,
             gimbal_error_alpha=0.5,
             min_pan_delta_per_update=0.0,
             max_pan_delta_per_update=200.0,
@@ -244,7 +213,6 @@ class TestGimbalController(unittest.TestCase):
             kd_pan=0.0,
             kd_tilt=0.0,
             deadband_x=0.0,
-            smoothing_alpha_gimbal=1.0,
             gimbal_error_alpha=1.0,
             min_pan_delta_per_update=1.0,
             max_pan_delta_per_update=200.0,
@@ -261,16 +229,16 @@ class TestGimbalController(unittest.TestCase):
 
         output = controller.compute(VisionTarget(1.0, 0.0, 0.4, 0.2, 1.0))
 
-        self.assertEqual(output.pan_delta, -8.0)
-        self.assertEqual(output.pan_abs, -8.0)
+        self.assertEqual(output.pan_delta, -4.0)
+        self.assertEqual(output.pan_abs, -4.0)
 
     def test_tilt_delta_is_limited_per_update(self):
         controller = GimbalController(PlanningConfig(kp_tilt=1.0))
 
         output = controller.compute(VisionTarget(0.0, -1.0, 0.4, 0.2, 1.0))
 
-        self.assertEqual(output.tilt_delta, 5.0)
-        self.assertEqual(output.tilt_abs, 50.0)
+        self.assertEqual(output.tilt_delta, -2.0)
+        self.assertEqual(output.tilt_abs, 43.0)
 
 
 if __name__ == "__main__":

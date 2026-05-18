@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from math import isfinite
 from typing import Any, Callable
 
-_MIN_TARGET_CONFIDENCE = 0.7
+_MIN_TARGET_CONFIDENCE = 0.5
 
 from raspberry_pi.hardware import GimbalConfig, GimbalHardware, SerialComm, SerialConfig
 from raspberry_pi.planning.config import PlanningConfig
@@ -19,7 +19,6 @@ from raspberry_pi.planning.types import GimbalOutput, VisionTarget
 class RuntimeConfig:
     port: str
     baudrate: int = 115200
-    camera_backend: str = "opencv"
     camera_id: int = 0
     show_window: bool = False
     frame_width: int = 640
@@ -256,7 +255,6 @@ def run(runtime: RuntimeConfig) -> None:
 
     try:
         from raspberry_pi.vision.pose_landmarker import (
-            run_pose_landmarker_on_camera,
             run_pose_landmarker_on_rpicam,
         )
 
@@ -275,16 +273,10 @@ def run(runtime: RuntimeConfig) -> None:
             "num_poses": runtime.num_poses,
             "debug_vision": runtime.debug_vision,
         }
-        if runtime.camera_backend == "rpicam":
-            run_pose_landmarker_on_rpicam(
-                runtime.camera_id,
-                **vision_kwargs,
-            )
-        else:
-            run_pose_landmarker_on_camera(
-                runtime.camera_id,
-                **vision_kwargs,
-            )
+        run_pose_landmarker_on_rpicam(
+            runtime.camera_id,
+            **vision_kwargs,
+        )
     except Exception as exc:  # pragma: no cover
         print(f"[MAIN] vision runtime failed: {exc}")
         shared.set_vision_failed(exc)
@@ -309,13 +301,7 @@ def _parse_args() -> RuntimeConfig:
         "--port", required=True, help="Serial port, e.g. /dev/ttyACM0 (Linux) or /dev/cu.usbmodemxxxx (macOS)"
     )
     parser.add_argument("--baudrate", type=int, default=115200, help="UART baudrate")
-    parser.add_argument(
-        "--camera-backend",
-        choices=["opencv", "rpicam"],
-        default="opencv",
-        help="Camera capture backend: opencv (USB) or rpicam (CSI via rpicam-vid)",
-    )
-    parser.add_argument("--camera-id", type=int, default=0, help="Camera device ID")
+    parser.add_argument("--camera-id", type=int, default=0, help="rpicam camera ID")
     parser.add_argument(
         "--show_window",
         action="store_true",
@@ -367,7 +353,6 @@ def _parse_args() -> RuntimeConfig:
     return RuntimeConfig(
         port=args.port,
         baudrate=args.baudrate,
-        camera_backend=args.camera_backend,
         camera_id=args.camera_id,
         show_window=args.show_window,
         frame_width=args.frame_width,

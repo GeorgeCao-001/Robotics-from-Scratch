@@ -96,13 +96,13 @@ def draw_pose_landmarks(
             body_width = info["width"]
 
             if draw_center:
-                # 绘制胸口中心（使用 info 中的精确坐标）
+                # 绘制躯干中心（使用 info 中的精确坐标）
                 cv2.circle(annotated, (center_x, center_y), 8, (0, 255, 255), -1)
                 cv2.circle(annotated, (center_x, center_y), 8, (0, 0, 0), 2)
 
             if draw_bbox:
                 # 使用与实际输出一致的 height/width 绘制边界框
-                # 以胸口中心为基准
+                # 以躯干中心为基准
                 x1 = center_x - body_width // 2
                 y1 = center_y - body_height // 2
                 x2 = x1 + body_width
@@ -143,12 +143,12 @@ def extract_pose_info(pose_landmarks, image_width: int, image_height: int) -> di
 
     Returns:
         dict: {
-            "target_x": int,   # Chest center x coordinate (mid-shoulder)
-            "target_y": int,   # Chest center y coordinate (mid-shoulder)
+            "target_x": int,   # Torso center x coordinate
+            "target_y": int,   # Torso center y coordinate
             "height": int,     # Body height (nose to knee)
             "width": int,      # Body width (shoulder to shoulder)
-            "target_x_norm": float, # Chest center x in [0,1]
-            "target_y_norm": float, # Chest center y in [0,1]
+            "target_x_norm": float, # Torso center x in [0,1]
+            "target_y_norm": float, # Torso center y in [0,1]
             "x_error_norm": float,  # Horizontal error in [-1,1]
             "y_error_norm": float,  # Vertical error in [-1,1]
             "height_norm": float,   # Body height normalized by image height
@@ -160,14 +160,18 @@ def extract_pose_info(pose_landmarks, image_width: int, image_height: int) -> di
     if num_landmarks < 33:
         return {}
 
-    # 胸口中心 (11: 左肩, 12: 右肩 的中点)
+    # 躯干中心：双肩和双髋四点平均，目标点更接近肚子附近。
     shoulder_left_x = pose_landmarks[11].x * image_width
     shoulder_left_y = pose_landmarks[11].y * image_height
     shoulder_right_x = pose_landmarks[12].x * image_width
     shoulder_right_y = pose_landmarks[12].y * image_height
+    hip_left_x = pose_landmarks[23].x * image_width
+    hip_left_y = pose_landmarks[23].y * image_height
+    hip_right_x = pose_landmarks[24].x * image_width
+    hip_right_y = pose_landmarks[24].y * image_height
 
-    center_x = int((shoulder_left_x + shoulder_right_x) / 2)
-    center_y = int((shoulder_left_y + shoulder_right_y) / 2)
+    center_x = int((shoulder_left_x + shoulder_right_x + hip_left_x + hip_right_x) / 4)
+    center_y = int((shoulder_left_y + shoulder_right_y + hip_left_y + hip_right_y) / 4)
 
     # 高度: 鼻尖(0) 到 膝盖较低者 (25: 左膝, 26: 右膝)
     nose_y = pose_landmarks[0].y * image_height
@@ -309,63 +313,6 @@ def _process_pose_frame(
             should_quit = True
 
     return last_timestamp_ms, annotated, should_quit
-
-
-def run_pose_landmarker_on_camera(
-    camera_id: int = 0,
-    on_detected=None,
-    show_window: bool = False,
-    frame_width: int = 640,
-    frame_height: int = 480,
-    camera_fps: int = 15,
-    num_poses: int = 1,
-    debug_vision: bool = False,
-):
-    options = _create_pose_landmarker_options(num_poses=num_poses)
-
-    cap = cv2.VideoCapture(camera_id)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, frame_width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, frame_height)
-    cap.set(cv2.CAP_PROP_FPS, camera_fps)
-    if not cap.isOpened():
-        print(f"Cannot open camera {camera_id}")
-        return
-    if debug_vision:
-        actual_width = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
-        actual_height = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-        actual_fps = cap.get(cv2.CAP_PROP_FPS)
-        print(
-            "[VISION] camera opened "
-            f"backend=opencv id={camera_id} "
-            f"width={actual_width:.0f} height={actual_height:.0f} fps={actual_fps:.1f}"
-        )
-
-    start_monotonic = time.monotonic()
-    last_timestamp_ms = 0
-    debug_state = {
-        "frames": 0,
-        "detections": 0,
-        "stats_start_s": start_monotonic,
-        "last_stats_log_s": start_monotonic,
-        "last_pose_log_s": 0.0,
-    }
-    with vision.PoseLandmarker.create_from_options(options) as landmarker:
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                print("Failed to grab frame")
-                break
-
-            last_timestamp_ms, _annotated, should_quit = _process_pose_frame(
-                frame, landmarker, start_monotonic, last_timestamp_ms,
-                on_detected, show_window, debug_vision, debug_state,
-            )
-            if should_quit:
-                break
-
-    cap.release()
-    if show_window:
-        cv2.destroyAllWindows()
 
 
 def run_pose_landmarker_on_rpicam(
@@ -588,4 +535,4 @@ def run_pose_landmarker_on_rpicam(
 
 
 if __name__ == "__main__":
-    run_pose_landmarker_on_camera(0)
+    run_pose_landmarker_on_rpicam(0)

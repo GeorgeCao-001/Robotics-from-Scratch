@@ -5,10 +5,10 @@ from dataclasses import dataclass
 class PlanningConfig:
     kp_angle: float = 0.9
     kp_distance: float = 1.0
-    kp_pan: float = 0.15
-    kp_tilt: float = 0.06
-    kd_pan: float = 0.005
-    kd_tilt: float = 0.0025
+    kp_pan: float = 0.6
+    kp_tilt: float = 0.2
+    kd_pan: float = 0.12
+    kd_tilt: float = 0.12
 
     deadband_x: float = 0.2
     deadband_y: float = 0.2
@@ -26,13 +26,11 @@ class PlanningConfig:
     pan_center: float = 0.0
     tilt_center: float = 45.0
 
-    smoothing_alpha_move: float = 0.3
-    smoothing_alpha_gimbal: float = 0.30
     gimbal_error_alpha: float = 0.2
-    min_pan_delta_per_update: float = 0.6
-    min_tilt_delta_per_update: float = 0.4
-    max_pan_delta_per_update: float = 2.0
-    max_tilt_delta_per_update: float = 1.0
+    min_pan_delta_per_update: float = 0.0
+    min_tilt_delta_per_update: float = 0.0
+    max_pan_delta_per_update: float = 4.0
+    max_tilt_delta_per_update: float = 2.0
     lost_timeout_s: float = 0.8
 
     gimbal_pan_pin: int = 17
