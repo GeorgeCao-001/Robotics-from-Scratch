@@ -101,10 +101,16 @@ class SerialComm:
 
     def _validate_message(self, message: JsonMessage) -> None:
         cmd = message.get("cmd")
-        if cmd not in {"move", "status"}:
+        if cmd not in {"move", "status", "mode"}:
             raise ValueError("Unsupported cmd")
 
         if cmd == "status":
+            return
+
+        if cmd == "mode":
+            mode = message.get("mode")
+            if mode not in {"rpi_auto", "remote"}:
+                raise ValueError("mode command requires mode=rpi_auto or mode=remote")
             return
 
         if cmd == "move":
