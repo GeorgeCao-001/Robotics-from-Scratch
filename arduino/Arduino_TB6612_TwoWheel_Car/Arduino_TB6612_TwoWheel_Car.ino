@@ -734,9 +734,7 @@ void handleSerialCommand() {
     if (rpiBufIdx > 0) {
       if (c == '\n' || c == '\r') {
         rpiBuf[rpiBufIdx] = '\0';
-        if (ctrlMode == CTRL_MODE_RPI_AUTO) {
-          parseRpiCommand(rpiBuf);
-        }
+        parseRpiCommand(rpiBuf);
         rpiBufIdx = 0;
       } else if (rpiBufIdx < RPI_CMD_MAX_LEN - 1) {
         rpiBuf[rpiBufIdx++] = c;
@@ -945,6 +943,8 @@ void parseRpiCommand(const char *json) {
   }
 
   if (!strstr(cmdPtr, "\"move\"")) return;
+
+  if (ctrlMode != CTRL_MODE_RPI_AUTO) return;
 
   const char *vPtr = strstr(json, "\"v\"");
   const char *wPtr = strstr(json, "\"w\"");
