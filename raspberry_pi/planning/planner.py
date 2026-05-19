@@ -44,20 +44,14 @@ class Planner:
             if self._lost_time_s >= self._cfg.lost_timeout_s:
                 stop = self._follow.stop_command()
                 self._last_move = stop
-                self._gimbal.reset()
-                self._last_gimbal = GimbalOutput(
-                    pan_delta=0.0,
-                    tilt_delta=0.0,
-                    pan_abs=self._gimbal.pan_abs,
-                    tilt_abs=self._gimbal.tilt_abs,
-                )
+                self._last_gimbal = zero_gimbal
                 return (self._last_move, self._last_gimbal)
 
             self._last_gimbal = zero_gimbal
             return (self._last_move, self._last_gimbal)
 
         self._lost_time_s = 0.0
-        gimbal = self._gimbal.compute(target)
+        gimbal = self._gimbal.compute(target, dt_s)
         move = self._follow.compute(target, gimbal.pan_abs)
         self._last_move = move
         self._last_gimbal = gimbal

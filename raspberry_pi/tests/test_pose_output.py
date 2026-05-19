@@ -11,7 +11,7 @@ import os
 # Add parent directory to path to import vision module
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from vision.pose_landmarker import run_pose_landmarker_on_camera
+from vision.pose_landmarker import run_pose_landmarker_on_rpicam
 
 
 class PoseTester:
@@ -84,8 +84,8 @@ def main():
     tester = PoseTester()
 
     try:
-        # Run pose landmarker with callback
-        run_pose_landmarker_on_camera(
+        # Run pose landmarker with rpicam callback
+        run_pose_landmarker_on_rpicam(
             camera_id=0, on_detected=tester.detection_callback
         )
     except KeyboardInterrupt:

@@ -98,6 +98,18 @@ class TestMainPipeline(unittest.TestCase):
         )
         self.assertIsNone(target)
 
+    def test_to_vision_target_rejects_low_confidence(self):
+        target = _to_vision_target(
+            {
+                "x_error_norm": 0.1,
+                "y_error_norm": 0.0,
+                "height_norm": 0.3,
+                "width_norm": 0.2,
+                "confidence": 0.69,
+            }
+        )
+        self.assertIsNone(target)
+
     def test_control_loop_sends_move_and_writes_gimbal(self):
         planner = _FakePlanner()
         comm = _FakeComm()

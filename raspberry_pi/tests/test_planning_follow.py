@@ -8,8 +8,6 @@ from raspberry_pi.planning.types import VisionTarget
 class TestFollowController(unittest.TestCase):
     def setUp(self):
         self.cfg = PlanningConfig(
-            smoothing_alpha_gimbal=1.0,
-            smoothing_alpha_move=1.0,
             target_height_norm=0.45,
             kp_angle=1.0,
             kp_distance=1.0,
