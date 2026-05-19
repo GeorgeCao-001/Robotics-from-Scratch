@@ -67,9 +67,14 @@
 #define CTRL_MODE_DEMO    0   // 演示模式 (自动运行)
 #define CTRL_MODE_SERIAL  1   // 串口命令模式 (USB调试)
 #define CTRL_MODE_REMOTE  2   // 遥控器模式 (ESP-NOW)
+#define CTRL_MODE_RPI_AUTO 3  // 树莓派自动模式 (视觉跟随)
 
 // 遥控器超时 (ms), 超过此时间未收到指令则自动停车
 #define REMOTE_TIMEOUT   500
+
+// 树莓派指令超时 (ms), 超过此时间未收到指令则自动停车
+#define RPI_CMD_TIMEOUT  1000
+#define RPI_CMD_MAX_LEN  64
 
 // ============================================================
 // 系统参数配置
@@ -165,7 +170,7 @@ unsigned long lastRemoteCmdTime = 0;   // 上次收到遥控指令的时间
 bool remoteConnected = false;          // 遥控器连接状态
 #define REMOTE_SPEED_MAX 40            // 遥控器摇杆满偏对应的最大速度 (脉冲/5ms)
 #define REMOTE_PWM_MAX 220             // 遥控模式下的最大PWM输出
-#define REMOTE_TURN_PWM_MAX 200        // 遥控模式下的最大转向PWM
+#define REMOTE_TURN_PWM_MAX 80        // 遥控模式下的最大转向PWM
 #define REMOTE_INPUT_DEADZONE 10       // 遥控输入死区 (%)
 #define FLAG_AUTO_MODE 0x01
 #define FLAG_MODE_SWITCH_REQUEST 0x02
@@ -173,6 +178,12 @@ bool remoteConnected = false;          // 遥控器连接状态
 // 遥控器串口接收缓冲区
 char remoteBuf[32];
 uint8_t remoteBufIdx = 0;
+
+// 树莓派串口接收缓冲区
+char rpiBuf[RPI_CMD_MAX_LEN];
+uint8_t rpiBufIdx = 0;
+unsigned long lastRpiCmdTime = 0;
+bool rpiAutoActive = false;
 
 // 遥控模式下直接PWM混控输出
 bool directPwmControl = false;
@@ -259,11 +270,12 @@ void setup() {
   Serial.println(F("  w/W - 前进    s/S - 后退"));
   Serial.println(F("  a/A - 左转    d/D - 右转"));
   Serial.println(F("  空格 - 停止   r/R - 运行演示"));
+  Serial.println(F("  p/P - 切换到树莓派自动模式"));
   Serial.println(F("  m/M - 切换控制模式"));
   Serial.println(F("  +/- - 加速/减速"));
   Serial.println(F("----------------------------------------"));
   Serial.println(F("控制模式:"));
-  Serial.println(F("  0=演示  1=串口  2=遥控器"));
+  Serial.println(F("  0=演示  1=串口  2=遥控器  3=树莓派自动"));
   Serial.println(F("----------------------------------------"));
 
   // 短暂延时确保系统稳定
@@ -477,6 +489,8 @@ void setDirectPwmDrive(int leftPwm, int rightPwm) {
 void applyRemoteDrive(int velPercent, int turnPercent) {
   int drivePercent = (abs(velPercent) <= REMOTE_INPUT_DEADZONE) ? 0 : velPercent;
   int steerPercent = (abs(turnPercent) <= REMOTE_INPUT_DEADZONE) ? 0 : turnPercent;
+
+  steerPercent = -steerPercent;
 
   if (drivePercent == 0 && steerPercent == 0) {
     moveStop();
@@ -708,105 +722,110 @@ void runDemoSequence() {
 // ============================================================
 
 void handleSerialCommand() {
-  if (!Serial.available()) return;
+  while (Serial.available()) {
+    char c = Serial.read();
 
-  char cmd = Serial.read();
+    if (c == '{') {
+      rpiBufIdx = 0;
+      rpiBuf[rpiBufIdx++] = c;
+      continue;
+    }
 
-  // 忽略换行和回车
-  if (cmd == '\n' || cmd == '\r') return;
-
-  switch (cmd) {
-    case 'w':
-    case 'W':
-      demoMode = false;
-      moveForward(DEFAULT_SPEED);
-      break;
-
-    case 's':
-    case 'S':
-      demoMode = false;
-      moveBackward(DEFAULT_SPEED);
-      break;
-
-    case 'a':
-    case 'A':
-      demoMode = false;
-      turnLeft(DEFAULT_TURN);
-      break;
-
-    case 'd':
-    case 'D':
-      demoMode = false;
-      turnRight(DEFAULT_TURN);
-      break;
-
-    case 'q':
-    case 'Q':
-      demoMode = false;
-      moveForwardLeft(DEFAULT_SPEED, DEFAULT_TURN);
-      break;
-
-    case 'e':
-    case 'E':
-      demoMode = false;
-      moveForwardRight(DEFAULT_SPEED, DEFAULT_TURN);
-      break;
-
-    case ' ':
-      demoMode = false;
-      moveStop();
-      break;
-
-    case 'r':
-    case 'R':
-      ctrlMode = CTRL_MODE_DEMO;
-      demoMode = true;
-      Serial.println(F("[模式] 切换到演示模式"));
-      break;
-
-    case 'm':
-    case 'M':
-      ctrlMode = (ctrlMode + 1) % 3;
-      demoMode = (ctrlMode == CTRL_MODE_DEMO);
-      Serial.print(F("[模式] 切换到: "));
-      switch (ctrlMode) {
-        case CTRL_MODE_DEMO:   Serial.println(F("演示模式")); break;
-        case CTRL_MODE_SERIAL: Serial.println(F("串口命令模式")); break;
-        case CTRL_MODE_REMOTE: Serial.println(F("遥控器模式")); break;
+    if (rpiBufIdx > 0) {
+      if (c == '\n' || c == '\r') {
+        rpiBuf[rpiBufIdx] = '\0';
+        if (ctrlMode == CTRL_MODE_RPI_AUTO) {
+          parseRpiCommand(rpiBuf);
+        }
+        rpiBufIdx = 0;
+      } else if (rpiBufIdx < RPI_CMD_MAX_LEN - 1) {
+        rpiBuf[rpiBufIdx++] = c;
+      } else {
+        rpiBufIdx = 0;
       }
-      break;
+      continue;
+    }
 
-    case '+':
-    case '=':
-      // 加速 (调整DEFAULT_SPEED引用, 这里使用velocity变量)
-      if (!flagStop) {
-        float newVel = velocity + 5;
-        velocity = constrain(newVel, -100, 100);
-        Serial.print(F("[速度] 当前速度="));
-        Serial.println(velocity);
-      }
-      break;
+    if (c == '\n' || c == '\r') continue;
 
-    case '-':
-    case '_':
-      if (!flagStop) {
-        float newVel = velocity - 5;
-        velocity = constrain(newVel, -100, 100);
-        Serial.print(F("[速度] 当前速度="));
-        Serial.println(velocity);
-      }
-      break;
-
-    case 'i':
-    case 'I':
-      // 打印状态信息
-      printStatus();
-      break;
-
-    default:
-      Serial.print(F("[提示] 未知命令: "));
-      Serial.println(cmd);
-      break;
+    switch (c) {
+      case 'w': case 'W':
+        demoMode = false;
+        moveForward(DEFAULT_SPEED);
+        break;
+      case 's': case 'S':
+        demoMode = false;
+        moveBackward(DEFAULT_SPEED);
+        break;
+      case 'a': case 'A':
+        demoMode = false;
+        turnLeft(DEFAULT_TURN);
+        break;
+      case 'd': case 'D':
+        demoMode = false;
+        turnRight(DEFAULT_TURN);
+        break;
+      case 'q': case 'Q':
+        demoMode = false;
+        moveForwardLeft(DEFAULT_SPEED, DEFAULT_TURN);
+        break;
+      case 'e': case 'E':
+        demoMode = false;
+        moveForwardRight(DEFAULT_SPEED, DEFAULT_TURN);
+        break;
+      case ' ':
+        demoMode = false;
+        moveStop();
+        break;
+      case 'r': case 'R':
+        ctrlMode = CTRL_MODE_DEMO;
+        demoMode = true;
+        rpiAutoActive = false;
+        Serial.println(F("[模式] 切换到演示模式"));
+        break;
+      case 'p': case 'P':
+        ctrlMode = CTRL_MODE_RPI_AUTO;
+        rpiAutoActive = true;
+        demoMode = false;
+        lastRpiCmdTime = millis();
+        Serial.println(F("[模式] 切换到树莓派自动模式"));
+        break;
+      case 'm': case 'M':
+        ctrlMode = (ctrlMode + 1) % 4;
+        demoMode = (ctrlMode == CTRL_MODE_DEMO);
+        rpiAutoActive = (ctrlMode == CTRL_MODE_RPI_AUTO);
+        Serial.print(F("[模式] 切换到: "));
+        switch (ctrlMode) {
+          case CTRL_MODE_DEMO:     Serial.println(F("演示模式")); break;
+          case CTRL_MODE_SERIAL:   Serial.println(F("串口命令模式")); break;
+          case CTRL_MODE_REMOTE:   Serial.println(F("遥控器模式")); break;
+          case CTRL_MODE_RPI_AUTO: Serial.println(F("树莓派自动模式")); break;
+        }
+        break;
+      case '+': case '=':
+        if (!flagStop) {
+          float newVel = velocity + 5;
+          velocity = constrain(newVel, -100, 100);
+          Serial.print(F("[速度] 当前速度="));
+          Serial.println(velocity);
+        }
+        break;
+      case '-': case '_':
+        if (!flagStop) {
+          float newVel = velocity - 5;
+          velocity = constrain(newVel, -100, 100);
+          Serial.print(F("[速度] 当前速度="));
+          Serial.println(velocity);
+        }
+        break;
+      case 'i': case 'I':
+        printStatus();
+        break;
+      default:
+        Serial.print(F("[提示] 未知命令: "));
+        Serial.println(c);
+        break;
+    }
   }
 }
 
@@ -868,13 +887,14 @@ void parseRemoteCommand(const char *cmd) {
   if (flags & FLAG_MODE_SWITCH_REQUEST) {
     moveStop();
     if (flags & FLAG_AUTO_MODE) {
-      ctrlMode = CTRL_MODE_DEMO;
-      demoMode = true;
-      Serial.println(F("[遥控] 用户触发: 切换到自动运行模式"));
+      ctrlMode = CTRL_MODE_RPI_AUTO;
+      rpiAutoActive = true;
+      demoMode = false;
+      Serial.println(F("[遥控] 用户触发: 切换到自动模式(树莓派控制)"));
       return;
     }
-
     ctrlMode = CTRL_MODE_REMOTE;
+    rpiAutoActive = false;
     demoMode = false;
     Serial.println(F("[遥控] 用户触发: 切换到手动遥控模式"));
   }
@@ -885,6 +905,88 @@ void parseRemoteCommand(const char *cmd) {
 
   demoMode = false;
   applyRemoteDrive(velInput, turnInput);
+}
+
+void parseRpiCommand(const char *json) {
+  const char *cmdPtr = strstr(json, "\"cmd\"");
+  if (!cmdPtr) return;
+
+  if (strstr(cmdPtr, "\"mode\"")) {
+    const char *modePtr = strstr(json, "\"mode\"");
+    if (!modePtr) return;
+    if (strstr(modePtr, "\"rpi_auto\"")) {
+      ctrlMode = CTRL_MODE_RPI_AUTO;
+      rpiAutoActive = true;
+      demoMode = false;
+      lastRpiCmdTime = millis();
+      Serial.println(F("[RPI] 树莓派请求: 切换到自动模式"));
+    } else if (strstr(modePtr, "\"remote\"")) {
+      ctrlMode = CTRL_MODE_REMOTE;
+      rpiAutoActive = false;
+      demoMode = false;
+      Serial.println(F("[RPI] 树莓派请求: 切换到遥控器模式"));
+    }
+    return;
+  }
+
+  if (strstr(cmdPtr, "\"estop\"")) {
+    moveStop();
+    ctrlMode = CTRL_MODE_REMOTE;
+    rpiAutoActive = false;
+    Serial.println(F("[RPI] 紧急停止! 切换到遥控器模式"));
+    lastRpiCmdTime = millis();
+    return;
+  }
+
+  if (strstr(cmdPtr, "\"stop\"")) {
+    moveStop();
+    lastRpiCmdTime = millis();
+    return;
+  }
+
+  if (!strstr(cmdPtr, "\"move\"")) return;
+
+  const char *vPtr = strstr(json, "\"v\"");
+  const char *wPtr = strstr(json, "\"w\"");
+  if (!vPtr || !wPtr) return;
+
+  float v = atof(vPtr + 3);
+  float w = atof(wPtr + 3);
+
+  v = constrain(v, -1.0, 1.0);
+  w = constrain(w, -1.0, 1.0);
+
+  int velPulse = (int)(v * REMOTE_SPEED_MAX);
+  int turnPulse = (int)(w * DEFAULT_TURN);
+
+  directPwmControl = false;
+  velocity = velPulse;
+  turn = turnPulse;
+  flagStop = false;
+
+  lastRpiCmdTime = millis();
+
+  static unsigned long lastRpiPrint = 0;
+  unsigned long now = millis();
+  if (now - lastRpiPrint > 200) {
+    Serial.print(F("[RPI] v="));
+    Serial.print(v, 2);
+    Serial.print(F(" w="));
+    Serial.print(w, 2);
+    Serial.print(F(" -> vel="));
+    Serial.print(velPulse);
+    Serial.print(F(" turn="));
+    Serial.println(turnPulse);
+    lastRpiPrint = now;
+  }
+}
+
+void checkRpiTimeout() {
+  if (!rpiAutoActive) return;
+  if (millis() - lastRpiCmdTime > RPI_CMD_TIMEOUT) {
+    moveStop();
+    Serial.println(F("[RPI] 树莓派指令超时! 自动停车"));
+  }
 }
 
 // ============================================================
@@ -927,9 +1029,10 @@ void printStatus() {
   Serial.println(flagStop ? F("停止") : F("运行中"));
   Serial.print(F("控制模式: "));
   switch (ctrlMode) {
-    case CTRL_MODE_DEMO:   Serial.println(F("演示")); break;
-    case CTRL_MODE_SERIAL: Serial.println(F("串口")); break;
-    case CTRL_MODE_REMOTE: Serial.println(F("遥控器")); break;
+    case CTRL_MODE_DEMO:     Serial.println(F("演示")); break;
+    case CTRL_MODE_SERIAL:   Serial.println(F("串口")); break;
+    case CTRL_MODE_REMOTE:   Serial.println(F("遥控器")); break;
+    case CTRL_MODE_RPI_AUTO: Serial.println(F("树莓派自动")); break;
   }
   Serial.print(F("遥控器: "));
   Serial.print(remoteConnected ? F("在线") : F("离线"));
@@ -966,6 +1069,11 @@ void loop() {
   // 遥控器超时检测
   if (remoteConnected) {
     checkRemoteTimeout();
+  }
+
+  // 树莓派指令超时检测
+  if (rpiAutoActive) {
+    checkRpiTimeout();
   }
 
   // 演示模式
