@@ -48,6 +48,17 @@ class TestSerialComm(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.comm.send_message({"cmd": "gimbal", "pan": 0.0, "tilt": 0.0})
 
+    def test_accepts_mode_cmd(self):
+        self.comm.send_message({"cmd": "mode", "mode": "rpi_auto"})
+        self.assertEqual(len(self.fake.writes), 1)
+        payload = self.fake.writes[0].decode("utf-8")
+        data = json.loads(payload.strip())
+        self.assertEqual(data, {"cmd": "mode", "mode": "rpi_auto"})
+
+    def test_rejects_invalid_mode_value(self):
+        with self.assertRaises(ValueError):
+            self.comm.send_message({"cmd": "mode", "mode": "invalid"})
+
     def test_read_message_parses_json_object(self):
         self.fake.reads.append(b'{"status":"ok","battery":87}\n')
         msg = self.comm.read_message()

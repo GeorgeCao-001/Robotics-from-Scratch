@@ -222,8 +222,7 @@ def run(runtime: RuntimeConfig) -> None:
         target = _to_vision_target(pose_info)
         if target is None:
             if runtime.debug_vision:
-                conf = pose_info.get("confidence", "N/A")
-                print(f"[MAIN] rejected pose_info confidence={conf} keys={sorted(pose_info.keys())}")
+                print(f"[MAIN] rejected pose_info keys={sorted(pose_info.keys())}")
             return
         if runtime.debug_vision:
             print(
@@ -261,6 +260,8 @@ def run(runtime: RuntimeConfig) -> None:
         comm.open()
         time.sleep(1.5)
         comm.send_stop()
+        comm.send_message({"cmd": "mode", "mode": "rpi_auto"})
+        time.sleep(0.5)
         control_thread.start()
         control_started = True
 
@@ -286,6 +287,10 @@ def run(runtime: RuntimeConfig) -> None:
             control_thread.join(timeout=1.0)
         try:
             comm.send_stop()
+        except Exception:
+            pass
+        try:
+            comm.send_message({"cmd": "mode", "mode": "remote"})
         except Exception:
             pass
         try:
