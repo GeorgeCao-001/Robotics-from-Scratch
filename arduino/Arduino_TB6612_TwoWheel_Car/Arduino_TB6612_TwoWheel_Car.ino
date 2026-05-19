@@ -73,7 +73,7 @@
 #define REMOTE_TIMEOUT   500
 
 // 树莓派指令超时 (ms), 超过此时间未收到指令则自动停车
-#define RPI_CMD_TIMEOUT  1000
+#define RPI_CMD_TIMEOUT  3000
 #define RPI_CMD_MAX_LEN  64
 
 // ============================================================
@@ -880,7 +880,6 @@ void parseRemoteCommand(const char *cmd) {
   flags = atoi(p);
 
   lastRemoteCmdTime = millis();
-  remoteConnected = true;
 
   if (flags & FLAG_MODE_SWITCH_REQUEST) {
     moveStop();
@@ -888,12 +887,14 @@ void parseRemoteCommand(const char *cmd) {
       ctrlMode = CTRL_MODE_RPI_AUTO;
       rpiAutoActive = true;
       demoMode = false;
+      remoteConnected = false;
       Serial.println(F("[遥控] 用户触发: 切换到自动模式(树莓派控制)"));
       return;
     }
     ctrlMode = CTRL_MODE_REMOTE;
     rpiAutoActive = false;
     demoMode = false;
+    remoteConnected = true;
     Serial.println(F("[遥控] 用户触发: 切换到手动遥控模式"));
   }
 
@@ -901,6 +902,7 @@ void parseRemoteCommand(const char *cmd) {
     return;
   }
 
+  remoteConnected = true;
   demoMode = false;
   applyRemoteDrive(velInput, turnInput);
 }
@@ -950,8 +952,8 @@ void parseRpiCommand(const char *json) {
   const char *wPtr = strstr(json, "\"w\"");
   if (!vPtr || !wPtr) return;
 
-  float v = atof(vPtr + 3);
-  float w = atof(wPtr + 3);
+  float v = atof(vPtr + 4);
+  float w = atof(wPtr + 4);
 
   v = constrain(v, -1.0, 1.0);
   w = constrain(w, -1.0, 1.0);
@@ -998,8 +1000,12 @@ void checkRemoteTimeout() {
 
   if (millis() - lastRemoteCmdTime > REMOTE_TIMEOUT) {
     remoteConnected = false;
-    Serial.println(F("[遥控] 遥控器超时! 自动停车"));
-    moveStop();
+    if (ctrlMode == CTRL_MODE_REMOTE) {
+      moveStop();
+      Serial.println(F("[遥控] 遥控器超时! 自动停车"));
+    } else {
+      Serial.println(F("[遥控] 遥控器超时 (非遥控模式，不停车)"));
+    }
   }
 }
 
