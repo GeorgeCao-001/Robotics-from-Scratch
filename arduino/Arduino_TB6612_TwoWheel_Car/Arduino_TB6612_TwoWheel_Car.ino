@@ -907,6 +907,41 @@ void parseRemoteCommand(const char *cmd) {
   applyRemoteDrive(velInput, turnInput);
 }
 
+void sendRpiStatus() {
+  Serial.print(F("{\"status\":\"ok\",\"mode\":\""));
+  switch (ctrlMode) {
+    case CTRL_MODE_DEMO:     Serial.print(F("demo")); break;
+    case CTRL_MODE_SERIAL:   Serial.print(F("serial")); break;
+    case CTRL_MODE_REMOTE:   Serial.print(F("remote")); break;
+    case CTRL_MODE_RPI_AUTO: Serial.print(F("rpi_auto")); break;
+    default:                 Serial.print(F("unknown")); break;
+  }
+
+  Serial.print(F("\",\"flagStop\":"));
+  Serial.print(flagStop ? F("true") : F("false"));
+  Serial.print(F(",\"rpiAuto\":"));
+  Serial.print(rpiAutoActive ? F("true") : F("false"));
+  Serial.print(F(",\"velocity\":"));
+  Serial.print(velocity, 2);
+  Serial.print(F(",\"turn\":"));
+  Serial.print(turn, 2);
+  Serial.print(F(",\"targetA\":"));
+  Serial.print(targetSpeedA);
+  Serial.print(F(",\"targetB\":"));
+  Serial.print(targetSpeedB);
+  Serial.print(F(",\"pwmA\":"));
+  Serial.print(motorPwmA);
+  Serial.print(F(",\"pwmB\":"));
+  Serial.print(motorPwmB);
+  Serial.print(F(",\"encA\":"));
+  Serial.print(encoderLeft);
+  Serial.print(F(",\"encB\":"));
+  Serial.print(encoderRight);
+  Serial.print(F(",\"battery\":"));
+  Serial.print(batteryVoltage, 2);
+  Serial.println(F("}"));
+}
+
 void parseRpiCommand(const char *json) {
   const char *cmdPtr = strstr(json, "\"cmd\"");
   if (!cmdPtr) return;
@@ -935,6 +970,11 @@ void parseRpiCommand(const char *json) {
     rpiAutoActive = false;
     Serial.println(F("[RPI] 紧急停止! 切换到遥控器模式"));
     lastRpiCmdTime = millis();
+    return;
+  }
+
+  if (strstr(cmdPtr, "\"status\"")) {
+    sendRpiStatus();
     return;
   }
 
