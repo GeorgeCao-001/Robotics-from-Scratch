@@ -992,8 +992,12 @@ void parseRpiCommand(const char *json) {
   const char *wPtr = strstr(json, "\"w\"");
   if (!vPtr || !wPtr) return;
 
-  float v = atof(vPtr + 4);
-  float w = atof(wPtr + 4);
+  const char *vVal = strchr(vPtr, ':');
+  const char *wVal = strchr(wPtr, ':');
+  if (!vVal || !wVal) return;
+
+  float v = atof(vVal + 1);  // 跳过冒号，atof 自动处理空格
+  float w = atof(wVal + 1);
 
   v = constrain(v, -1.0, 1.0);
   w = constrain(w, -1.0, 1.0);
