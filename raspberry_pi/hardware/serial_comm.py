@@ -65,6 +65,12 @@ class SerialComm:
     def send_stop(self) -> None:
         self.send_move(0.0, 0.0)
 
+    def enter_rpi_auto_mode(self) -> None:
+        self._ensure_open()
+        data = ("p" + self._config.newline).encode("utf-8")
+        self._serial.write(data)
+        self._log("TX", "p")
+
     def request_status(self) -> JsonMessage | None:
         self.send_message({"cmd": "status"})
         return self.read_message()

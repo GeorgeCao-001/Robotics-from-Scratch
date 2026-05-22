@@ -259,8 +259,9 @@ def run(runtime: RuntimeConfig) -> None:
 
         comm.open()
         time.sleep(1.5)
+        comm.enter_rpi_auto_mode()
+        time.sleep(0.2)
         comm.send_stop()
-        comm.send_message({"cmd": "mode", "mode": "rpi_auto"})
         time.sleep(0.5)
         control_thread.start()
         control_started = True
