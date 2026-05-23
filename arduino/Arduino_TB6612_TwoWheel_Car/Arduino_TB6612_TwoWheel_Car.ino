@@ -385,7 +385,7 @@ ISR(TIMER2_COMPA_vect) {
 // ============================================================
 
 int incrementalPI_A(int encoder, int target) {
-  piBiasA = encoder - target;
+  piBiasA = target - encoder;    // 偏差 = 目标 - 实际 (正偏差→正PWM→正转加速)
   
   // 增量式PI计算
   piPwmA += (int)(VELOCITY_KP * (piBiasA - piLastBiasA) + VELOCITY_KI * piBiasA);
@@ -400,7 +400,7 @@ int incrementalPI_A(int encoder, int target) {
 }
 
 int incrementalPI_B(int encoder, int target) {
-  piBiasB = encoder - target;
+  piBiasB = target - encoder;    // 偏差 = 目标 - 实际 (正偏差→正PWM→正转加速)
   
   // 增量式PI计算
   piPwmB += (int)(VELOCITY_KP * (piBiasB - piLastBiasB) + VELOCITY_KI * piBiasB);
@@ -597,12 +597,14 @@ void moveForwardRight(int speedVal, int turnVal) {
 
 // 停止
 void moveStop() {
+  flagStop = true;          // 先设停止标志，阻止ISR继续PI计算
   directPwmControl = false;
-  directPwmLeft = 0;
-  directPwmRight = 0;
   velocity = 0;
   turn     = 0;
-  flagStop = true;
+  directPwmLeft = 0;
+  directPwmRight = 0;
+  resetPIController();      // 清零PI积分，防止残留输出
+  setMotorPwm(0, 0);        // 立即停止电机
   Serial.println(F("[运动] 停止"));
 }
 
